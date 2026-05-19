@@ -35,13 +35,15 @@ DIAS_PT   = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
 # palavras-chave que indicam projeto encerrado (case-insensitive, busca parcial)
 STATUS_PROJETO_INATIVO = {"finalizado", "cancelado", "arquivado", "concluído", "concluido", "suspenso"}
 
+# nome exato do projeto template (case-insensitive) — nunca deve aparecer no relatório
+PROJETO_TEMPLATE = "projeto base"
+
 
 def fmt_data_pt(d):
     return f"{DIAS_PT[d.weekday()].capitalize()}, {d.day:02d} de {MESES_PT[d.month - 1]} de {d.year}"
 
 
 def projeto_inativo(status_str):
-    """Retorna True se o status do projeto indicar encerramento."""
     if not status_str:
         return False
     s = status_str.lower()
@@ -70,6 +72,7 @@ def buscar_tarefas():
             "and": [
                 {"property": "Status da Tarefa", "status": {"does_not_equal": "Finalizado"}},
                 {"property": "Status da Tarefa", "status": {"does_not_equal": "Cancelado"}},
+                {"property": "Status da Tarefa", "status": {"does_not_equal": "Não iniciada"}},
             ]
         },
         "page_size": 100,
@@ -168,7 +171,6 @@ def extrair(t, usuarios):
                 rels = v.get("relation", [])
                 if rels:
                     return rels[0].get("id") or None
-        # fallback: qualquer relation com itens
         for k, v in props.items():
             if v.get("type") == "relation":
                 rels = v.get("relation", [])
@@ -177,7 +179,6 @@ def extrair(t, usuarios):
         return None
 
     def ler_projeto():
-        # tenta campos textuais com nomes comuns
         for campo in ("Projeto", "projeto", "Project", "Nome do projeto",
                       "Projeto / Cliente", "2026 | Projetos", "2026 |  Projetos "):
             v = props.get(campo)
@@ -205,7 +206,7 @@ def extrair(t, usuarios):
                 f = v.get("formula", {})
                 if f.get("type") == "string" and f.get("string"):
                     return f["string"]
-        # fallback: rollups que só tenham conteúdo textual (title/rich_text), nunca status/select
+        # fallback: rollups com conteúdo textual (exclui rollups de status/select)
         for k, v in props.items():
             if v.get("type") != "rollup":
                 continue
@@ -344,7 +345,6 @@ def info_revisao(t):
 def montar(tarefas):
     hoje = datetime.utcnow().date()
     em3  = hoje + timedelta(days=3)
-    em5  = hoje + timedelta(days=5)
     ha3  = hoje - timedelta(days=3)
     ha7  = hoje - timedelta(days=7)
 
@@ -405,24 +405,18 @@ def montar(tarefas):
             proj_parados.append({"nome": nome, "dias": dias, "ultima": ultima, "tarefas": ts_proj})
     proj_parados.sort(key=lambda x: -(x["dias"] or 0))
 
-    nao_iniciadas_risco = [
-        t for t in tarefas
-        if t["status"] == "Não iniciada" and t["d_limite_calc"] and t["d_limite_calc"] <= em5
-    ]
-
     return {
-        "hoje":               hoje,
-        "total":              len(tarefas),
-        "atrasadas":          sorted(atrasadas, key=lambda x: -(x["dias_atraso"] or 0)),
-        "vencem3":            sorted(vencem3, key=lambda x: x["d_limite_calc"]),
-        "revisoes":           revisoes,
-        "rev_paradas":        rev_paradas,
-        "rev_concluidas":     rev_concluidas,
-        "aguarda_licia":      aguarda_licia,
-        "licia":              licia,
-        "willian":            willian,
-        "proj_parados":       proj_parados,
-        "nao_iniciadas_risco": nao_iniciadas_risco,
+        "hoje":           hoje,
+        "total":          len(tarefas),
+        "atrasadas":      sorted(atrasadas, key=lambda x: -(x["dias_atraso"] or 0)),
+        "vencem3":        sorted(vencem3, key=lambda x: x["d_limite_calc"]),
+        "revisoes":       revisoes,
+        "rev_paradas":    rev_paradas,
+        "rev_concluidas": rev_concluidas,
+        "aguarda_licia":  aguarda_licia,
+        "licia":          licia,
+        "willian":        willian,
+        "proj_parados":   proj_parados,
     }
 
 
@@ -431,7 +425,6 @@ def montar(tarefas):
 BADGE_CORES = {
     "Revisão":       ("#92400e", "#fef3c7"),
     "Iniciar":       ("#374151", "#e5e7eb"),
-    "Não iniciada":  ("#6b7280", "#f3f4f6"),
     "Detalhamento":  ("#5b21b6", "#ede9fe"),
     "Criação":       ("#1e40af", "#dbeafe"),
     "Com Pendência": ("#713f12", "#fef9c3"),
@@ -753,25 +746,12 @@ def gerar_html(rel):
     else:
         s4_parados = vazio("Nenhum projeto parado há mais de 7 dias.")
 
-    if rel["nao_iniciadas_risco"]:
-        linhas = []
-        for t in rel["nao_iniciadas_risco"]:
-            resp_nome = t["responsavel"]["nome"] or "—"
-            linhas.append(
-                f'<tr>{celula_tarefa(t)}'
-                f'{td(resp_nome)}'
-                f'{td(fmt_d(t["d_limite_calc"]), cor="#c05621", negrito=True)}</tr>'
-            )
-        s4_risco = tabela_wrap(linhas, ["Projeto / Tarefa", "Responsável", "Limite"])
-    else:
-        s4_risco = vazio("Nenhuma tarefa não iniciada com prazo nos próximos 5 dias.")
-
     gargalos = []
-    nao_inic_licia = sum(1 for t in rel["licia"] if t["status"] in ("Não iniciada", "Iniciar"))
-    if nao_inic_licia >= 3:
+    iniciar_licia = sum(1 for t in rel["licia"] if t["status"] == "Iniciar")
+    if iniciar_licia >= 3:
         gargalos.append(alerta(
-            f'<strong>{nao_inic_licia} tarefas "Não iniciada" ou "Iniciar"</strong> concentradas em Lícia. '
-            f'Risco de acúmulo. Defina D. Início + Dias úteis para ativar controle de prazos.', "yellow"))
+            f'<strong>{iniciar_licia} tarefas com status "Iniciar"</strong> concentradas em Lícia. '
+            f'Risco de acúmulo.', "yellow"))
     if len(rel["rev_paradas"]) >= 2:
         gargalos.append(alerta(
             f'<strong>{len(rel["rev_paradas"])} revisões paradas simultaneamente.</strong> '
@@ -789,9 +769,6 @@ def gerar_html(rel):
         + secao_titulo("Seção 4 — Pode virar problema")
         + '<div style="margin-bottom:14px;">'
         + sub_titulo("Projetos parados há mais de 7 dias", len(rel["proj_parados"])) + s4_parados
-        + '</div>'
-        + '<div style="margin-bottom:14px;">'
-        + sub_titulo("Não iniciadas com prazo próximo (≤ 5 dias)", len(rel["nao_iniciadas_risco"])) + s4_risco
         + '</div>'
         + sub_titulo("Gargalos identificados")
         + gargalos_html
@@ -939,36 +916,8 @@ def main():
     raw = buscar_tarefas()
     print(f"{len(raw)} tarefas encontradas.")
 
-    if raw:
-        print("=== DIAGNÓSTICO ===")
-        for k, v in raw[0].get("properties", {}).items():
-            tp = v.get("type", "?")
-            if tp == "rollup":
-                ro = v.get("rollup", {})
-                detalhe = f"rollup/{ro.get('type','?')}"
-                if ro.get("type") == "array":
-                    for item in ro.get("array", [])[:1]:
-                        detalhe += f" item_type={item.get('type')} item_keys={list(item.keys())}"
-                        if item.get("type") == "status" and item.get("status"):
-                            detalhe += f" nome={repr(item['status'].get('name',''))}"
-            elif tp == "relation":
-                detalhe = f"relation, {len(v.get('relation',[]))} item(s)"
-            elif tp in ("title", "rich_text"):
-                txt = "".join(x.get("plain_text","") for x in v.get(tp, []))
-                detalhe = repr(txt[:60])
-            elif tp in ("select", "status"):
-                val = v.get(tp) or {}
-                detalhe = repr(val.get("name", ""))
-            else:
-                detalhe = ""
-            print(f"  [{tp}] {repr(k)}  {detalhe}")
-        print("=== FIM DIAGNÓSTICO ===")
-
     print("Extraindo campos...")
     tarefas = [extrair(t, usuarios) for t in raw]
-
-    com_projeto = sum(1 for t in tarefas if t["projeto_nome"])
-    print(f"Tarefas com projeto_nome preenchido: {com_projeto}/{len(tarefas)}")
 
     # fallback: busca via API para tarefas sem projeto identificado
     ids_vistos = set()
@@ -986,18 +935,16 @@ def main():
     if ids_vistos:
         print(f"{len(ids_vistos)} projetos carregados via API (fallback).")
 
-    # diagnóstico: status de projeto encontrados
-    status_freq = {}
-    for t in tarefas:
-        s = t["projeto_status"] or "(sem status)"
-        status_freq[s] = status_freq.get(s, 0) + 1
-    print("Status de projeto encontrados:", status_freq)
-
     # exclui tarefas cujo projeto esteja explicitamente encerrado
-    antes = len(tarefas)
     tarefas = [t for t in tarefas if not projeto_inativo(t["projeto_status"])]
-    removidas = antes - len(tarefas)
-    print(f"Tarefas após filtro de projeto encerrado: {len(tarefas)} ({removidas} removidas)")
+
+    # exclui tarefas do projeto template
+    tarefas = [
+        t for t in tarefas
+        if (t["projeto_nome"] or "").strip().lower() != PROJETO_TEMPLATE
+    ]
+
+    print(f"{len(tarefas)} tarefas após filtros.")
 
     print("Montando relatório...")
     rel = montar(tarefas)
