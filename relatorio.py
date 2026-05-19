@@ -145,6 +145,27 @@ def extrair(t, usuarios):
         rels = v.get("relation", [])
         return rels[0].get("id", "") if rels else None
 
+    def ler_projeto():
+        v = props.get("Projeto", {})
+        tp = v.get("type")
+        # rollup (tipo mais comum para nome de projeto relacionado)
+        if tp == "rollup":
+            ro = v.get("rollup", {})
+            if ro.get("type") == "string" and ro.get("string"):
+                return ro["string"]
+            for item in ro.get("array", []):
+                for sub_tp in ("title", "rich_text"):
+                    parts = item.get(sub_tp, [])
+                    if parts:
+                        txt = "".join(x["plain_text"] for x in parts)
+                        if txt:
+                            return txt
+        # fórmula, texto, select, status
+        resultado = texto("Projeto")
+        if resultado:
+            return resultado
+        return None
+
     return {
         "id":           t["id"],
         "nome":         texto("Tarefa / Projeto") or "(sem nome)",
@@ -161,7 +182,7 @@ def extrair(t, usuarios):
         "rev_licia2":   checkbox("2° | Lícia"),
         "rev_willian2": checkbox("2° | Willian"),
         "projeto_id":   projeto_id(),
-        "projeto_nome": None,
+        "projeto_nome": ler_projeto(),
         "url":          t.get("url", ""),
         "d_limite_calc": None,
         "dias_atraso":  None,
@@ -841,9 +862,12 @@ def main():
     print("Extraindo campos...")
     tarefas = [extrair(t, usuarios) for t in raw]
 
-    print("Buscando nomes dos projetos...")
+    # fallback: busca nome do projeto via API para tarefas sem coluna Projeto preenchida
+    print("Buscando nomes dos projetos (fallback API)...")
     ids_vistos = set()
     for t in tarefas:
+        if t["projeto_nome"]:
+            continue
         pid = t["projeto_id"]
         if not pid:
             continue
@@ -852,7 +876,7 @@ def main():
             t["projeto_nome"] = buscar_nome_projeto(pid)
         else:
             t["projeto_nome"] = _proj_cache.get(pid.replace("-", ""))
-    print(f"{len(ids_vistos)} projetos únicos carregados.")
+    print(f"{len(ids_vistos)} projetos carregados via API (fallback).")
 
     print("Montando relatório...")
     rel = montar(tarefas)
