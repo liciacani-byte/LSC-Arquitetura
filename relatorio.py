@@ -149,12 +149,24 @@ def extrair(t, usuarios):
         return {"id": "", "nome": ""}
 
     def projeto_id():
-        v = props.get("2026 |  Projetos ", {})
-        rels = v.get("relation", [])
-        return rels[0].get("id", "") if rels else None
+        # tenta variações conhecidas do nome da coluna de relação com projeto
+        for campo in ("2026 |  Projetos ", "2026 | Projetos", "2026 |  Projetos",
+                      "Projetos", "Projeto", "projeto", "Project"):
+            v = props.get(campo, {})
+            if v.get("type") == "relation":
+                rels = v.get("relation", [])
+                if rels:
+                    return rels[0].get("id") or None
+        # fallback: qualquer campo relation com itens
+        for k, v in props.items():
+            if v.get("type") == "relation":
+                rels = v.get("relation", [])
+                if rels:
+                    return rels[0].get("id") or None
+        return None
 
     def ler_projeto():
-        # tenta todas as variações comuns do nome da coluna
+        # primeiro tenta rollup/fórmula/select/texto com nomes comuns
         for campo in ("Projeto", "projeto", "Project", "Nome do projeto",
                       "Projeto / Cliente", "2026 | Projetos", "2026 |  Projetos "):
             v = props.get(campo, {})
@@ -175,13 +187,27 @@ def extrair(t, usuarios):
             if tp == "title":
                 return "".join(x["plain_text"] for x in v.get("title", []))
             if tp == "rich_text":
-                return "".join(x["plain_text"] for x in v.get("rich_text", []))
+                txt = "".join(x["plain_text"] for x in v.get("rich_text", []))
+                return txt if txt else None
             if tp == "select" and v.get("select"):
                 return v["select"]["name"]
             if tp == "formula":
                 f = v.get("formula", {})
                 if f.get("type") == "string" and f.get("string"):
                     return f["string"]
+        # tenta qualquer campo do tipo rollup que tenha conteúdo
+        for k, v in props.items():
+            if v.get("type") == "rollup":
+                ro = v.get("rollup", {})
+                if ro.get("type") == "string" and ro.get("string"):
+                    return ro["string"]
+                for item in ro.get("array", []):
+                    for sub_tp in ("title", "rich_text"):
+                        parts = item.get(sub_tp, [])
+                        if parts:
+                            txt = "".join(x["plain_text"] for x in parts)
+                            if txt:
+                                return txt
         return None
 
     return {
@@ -379,8 +405,7 @@ def badge(status):
     c, bg = BADGE_CORES.get(status, ("#555", "#f0f0f0"))
     return (
         f'<span style="display:inline-block;font-size:10px;padding:2px 8px;'
-        f'border-radius:99px;font-weight:500;background:{bg};color:{c};">'
-        f'{status}</span>'
+        f'border-radius:99px;font-weight:500;background:{bg};color:{c};">'        f'{status}</span>'
     )
 
 
@@ -517,8 +542,7 @@ def gerar_html(rel):
             atraso_str = str(t["dias_atraso"]) + "d"
             resp_nome = t["responsavel"]["nome"] or "—"
             linhas.append(
-                f'<tr>{celula_tarefa(t)}{td(badge(t["status"]))}'
-                f'{td(resp_nome, nowrap=True)}'
+                f'<tr>{celula_tarefa(t)}{td(badge(t["status"]))}'                f'{td(resp_nome, nowrap=True)}'
                 f'{td(atraso_str, cor="#e53e3e", negrito=True)}</tr>'
             )
         s1_atrasadas = tabela_wrap(linhas, ["Projeto / Tarefa", "Status", "Responsável", "Atraso"])
@@ -530,8 +554,7 @@ def gerar_html(rel):
         for t in rel["vencem3"]:
             resp_nome = t["responsavel"]["nome"] or "—"
             linhas.append(
-                f'<tr>{celula_tarefa(t)}{td(badge(t["status"]))}'
-                f'{td(resp_nome)}'
+                f'<tr>{celula_tarefa(t)}{td(badge(t["status"]))}'                f'{td(resp_nome)}'
                 f'{td(fmt_d(t["d_limite_calc"]), cor="#c05621")}</tr>'
             )
         s1_vence3 = tabela_wrap(linhas, ["Projeto / Tarefa", "Status", "Responsável", "Limite"])
@@ -880,10 +903,12 @@ def main():
         print("=== DIAGNÓSTICO: propriedades da 1ª tarefa ===")
         for k, v in raw[0].get("properties", {}).items():
             tp = v.get("type", "?")
-            # mostra valor resumido para ajudar a identificar o campo de projeto
             if tp == "rollup":
                 ro = v.get("rollup", {})
                 detalhe = f"rollup/{ro.get('type','?')}"
+                if ro.get("type") == "array":
+                    for item in ro.get("array", [])[:1]:
+                        detalhe += f" array[0]={list(item.keys())}"
             elif tp == "relation":
                 detalhe = f"relation, {len(v.get('relation',[]))} item(s)"
             elif tp in ("title", "rich_text"):
@@ -917,6 +942,8 @@ def main():
             t["projeto_nome"] = _proj_cache.get(pid.replace("-", ""))
     if ids_vistos:
         print(f"{len(ids_vistos)} projetos carregados via API (fallback).")
+        com_projeto2 = sum(1 for t in tarefas if t["projeto_nome"])
+        print(f"Tarefas com projeto_nome após fallback: {com_projeto2}/{len(tarefas)}")
 
     print("Montando relatório...")
     rel = montar(tarefas)
