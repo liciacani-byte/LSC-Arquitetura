@@ -481,9 +481,9 @@ def gerar_html(rel):
     if rel["atrasadas"]:
         linhas = []
         for t in rel["atrasadas"]:
-            linhas.append(f'<tr>{celula_tarefa(t)}{td(badge(t["status"]))}'
-                          f'{td(t["responsavel"]["nome"] or "—", nowrap=True)}'
-                          f'{td(f\'{t["dias_atraso"]}d\', cor="#e53e3e", negrito=True)}</tr>')
+            linhas.append(f'<tr>{celula_tarefa(t)}{td(badge(t["status"]))}')
+            linhas[-1] += f'{td(t["responsavel"]["nome"] or "—", nowrap=True)}'
+            linhas[-1] += f'{td(f\'{t["dias_atraso"]}d\', cor="#e53e3e", negrito=True)}</tr>'
         s1_atrasadas = tabela_wrap(linhas, ["Projeto / Tarefa", "Status", "Responsável", "Atraso"])
     else:
         s1_atrasadas = vazio("Nenhuma tarefa atrasada. Preencha D. Início + Dias úteis para ativar esta seção.")
@@ -491,9 +491,9 @@ def gerar_html(rel):
     if rel["vencem3"]:
         linhas = []
         for t in rel["vencem3"]:
-            linhas.append(f'<tr>{celula_tarefa(t)}{td(badge(t["status"]))}'
-                          f'{td(t["responsavel"]["nome"] or "—")}'
-                          f'{td(fmt_d(t["d_limite_calc"]), cor="#c05621")}</tr>')
+            linhas.append(f'<tr>{celula_tarefa(t)}{td(badge(t["status"]))}')
+            linhas[-1] += f'{td(t["responsavel"]["nome"] or "—")}'
+            linhas[-1] += f'{td(fmt_d(t["d_limite_calc"]), cor="#c05621")}</tr>'
         s1_vence3 = tabela_wrap(linhas, ["Projeto / Tarefa", "Status", "Responsável", "Limite"])
     else:
         s1_vence3 = vazio("Nenhuma tarefa vence nos próximos 3 dias.")
@@ -521,8 +521,9 @@ def gerar_html(rel):
       {secao_titulo("Seção 1 — Atenção imediata")}
       <div style="margin-bottom:14px;">{sub_titulo("Atrasadas", len(rel["atrasadas"]))}{s1_atrasadas}</div>
       <div style="margin-bottom:14px;">{sub_titulo("Vencem nos próximos 3 dias", len(rel["vencem3"]))}{s1_vence3}</div>
-      {sub_titulo("Prioridades críticas")}{"".join(alertas_criticos)}
+      {sub_titulo("Prioridades críticas")}{""}
     </div>"""
+    s1 = s1.replace("{\"\"}", "".join(alertas_criticos))
 
     # ── Seção 2 — Revisões ───────────────────────────────────────────────────────
     if rel["rev_paradas"]:
@@ -654,8 +655,9 @@ def gerar_html(rel):
       {secao_titulo("Seção 4 — Pode virar problema")}
       <div style="margin-bottom:14px;">{sub_titulo("Projetos parados há mais de 7 dias", len(rel["proj_parados"]))}{s4_parados}</div>
       <div style="margin-bottom:14px;">{sub_titulo("Não iniciadas com prazo próximo (≤ 5 dias)", len(rel["nao_iniciadas_risco"]))}{s4_risco}</div>
-      {sub_titulo("Gargalos identificados")}{"".join(gargalos)}
+      {sub_titulo("Gargalos identificados")}{""}
     </div>"""
+    s4 = s4.replace("{\"\"}", "".join(gargalos))
 
     # ── Seção 5 — Visão Willian ──────────────────────────────────────────────────
     if rel["willian"]:
