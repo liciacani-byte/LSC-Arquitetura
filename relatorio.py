@@ -573,7 +573,7 @@ def gerar_html(rel):
             atraso_str = str(t["dias_atraso"]) + "d"
             resp_nome = t["responsavel"]["nome"] or "—"
             linhas.append(
-                f'<tr>{celula_tarefa(t)}{td(badge(t["status"]))}'
+                f'<tr>{celula_tarefa(t)}{td(badge(t["status"]))}'  
                 f'{td(resp_nome, nowrap=True)}'
                 f'{td(atraso_str, cor="#e53e3e", negrito=True)}</tr>'
             )
@@ -586,7 +586,7 @@ def gerar_html(rel):
         for t in rel["vencem3"]:
             resp_nome = t["responsavel"]["nome"] or "—"
             linhas.append(
-                f'<tr>{celula_tarefa(t)}{td(badge(t["status"]))}'
+                f'<tr>{celula_tarefa(t)}{td(badge(t["status"]))}'  
                 f'{td(resp_nome)}'
                 f'{td(fmt_d(t["d_limite_calc"]), cor="#c05621")}</tr>'
             )
@@ -630,43 +630,42 @@ def gerar_html(rel):
     )
 
     # ── Seção 2 — Revisões ───────────────────────────────────────────────────────
-    if rel["rev_paradas"]:
+    paradas_ids = {t["id"] for t in rel["rev_paradas"]}
+    # paradas primeiro (mais tempo sem atividade no topo), depois o restante
+    revisoes_ordenadas = (
+        sorted(rel["rev_paradas"], key=lambda x: -(x.get("dias_parado") or 0))
+        + [t for t in rel["revisoes"] if t["id"] not in paradas_ids]
+    )
+
+    if revisoes_ordenadas:
         linhas = []
-        for t in rel["rev_paradas"]:
+        for t in revisoes_ordenadas:
             ri = t["revisao_info"]
             aguarda = "Lícia" if ri["aguarda_licia"] else "Willian"
-            parado_str = str(t.get("dias_parado", "?")) + "d"
+            eh_parada = t["id"] in paradas_ids
+            ultima = parse_d(t["ultima_edicao"])
+            dias_p = t.get("dias_parado") or ((hoje - ultima).days if ultima else None)
+            parado_str = (str(dias_p) + "d") if dias_p is not None else "—"
+            row_style = ' style="background:#fff5f5;"' if eh_parada else ""
+            cor_ag = "#c0392b" if eh_parada else "#555"
+            cor_p  = "#e53e3e" if eh_parada else "#aaa"
             linhas.append(
-                f'<tr>{celula_tarefa(t, mostrar_flow=True)}'
-                f'{td(t["etapa"])}'
-                f'{td(aguarda, cor="#c0392b", negrito=True)}'
-                f'{td(parado_str, cor="#e53e3e", negrito=True)}</tr>'
+                f'<tr{row_style}>'
+                f'{celula_tarefa(t, mostrar_flow=True)}'
+                f'{td(t["etapa"] or "—")}'
+                f'{td(aguarda, cor=cor_ag, negrito=eh_parada)}'
+                f'{td(parado_str, cor=cor_p, negrito=eh_parada)}'
+                f'</tr>'
             )
-        s2_paradas = tabela_wrap(linhas, ["Projeto / Tarefa", "Etapa", "Aguardando", "Parado há"])
+        s2_tabela = tabela_wrap(linhas, ["Projeto / Tarefa", "Etapa", "Aguardando", "Parado há"])
     else:
-        s2_paradas = vazio("Nenhuma revisão parada há mais de 3 dias.")
-
-    if rel["revisoes"]:
-        linhas = []
-        for t in rel["revisoes"]:
-            ri = t["revisao_info"]
-            concluida_tag = (' <span style="background:#d1fae5;color:#065f46;font-size:10px;'
-                             'padding:1px 6px;border-radius:99px;">Concluída</span>') if ri["concluida"] else ""
-            label_td = td(ri["label"] + concluida_tag, nowrap=False)
-            linhas.append(f'<tr>{celula_tarefa(t, mostrar_flow=True)}{label_td}</tr>')
-        s2_fluxo = tabela_wrap(linhas, ["Projeto / Tarefa", "Etapa do fluxo"])
-    else:
-        s2_fluxo = vazio("Nenhuma tarefa em revisão no momento.")
+        s2_tabela = vazio("Nenhuma tarefa em revisão no momento.")
 
     s2 = (
         '<div style="margin-bottom:26px;">'
         + secao_titulo("Seção 2 — Revisões")
-        + '<div style="margin-bottom:14px;">'
-        + sub_titulo("⚠️ Em revisão há mais de 3 dias sem validação", len(rel["rev_paradas"])) + s2_paradas
-        + '</div>'
-        + '<div style="margin-bottom:14px;">'
-        + sub_titulo("Fluxo atual de revisões", len(rel["revisoes"])) + s2_fluxo
-        + '</div>'
+        + sub_titulo("Fluxo de revisões", len(revisoes_ordenadas))
+        + s2_tabela
         + '</div>'
     )
 
@@ -680,7 +679,7 @@ def gerar_html(rel):
             prazo_str = fmt_d(t["d_limite_calc"]) if t["d_limite_calc"] else "—"
             linhas.append(
                 f'<tr>{celula_tarefa(t, mostrar_flow=(t["status"] == "Revisão"))}'
-                f'{td(badge(t["status"]))}'
+                f'{td(badge(t["status"]))}'  
                 f'{td(t["etapa"] or "—")}'
                 f'{td(prazo_str)}'
                 f'{td(sem_mov_str, cor="#888")}</tr>'
