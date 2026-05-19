@@ -32,6 +32,8 @@ MESES_PT = ["janeiro", "fevereiro", "março", "abril", "maio", "junho",
 DIAS_PT   = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
              "sexta-feira", "sábado", "domingo"]
 
+STATUS_PROJETO_ATIVOS = {"Em andamento | Criação", "Em andamento | Detalhamento"}
+
 def fmt_data_pt(d):
     return f"{DIAS_PT[d.weekday()].capitalize()}, {d.day:02d} de {MESES_PT[d.month - 1]} de {d.year}"
 
@@ -149,7 +151,6 @@ def extrair(t, usuarios):
         return {"id": "", "nome": ""}
 
     def projeto_id():
-        # tenta variações conhecidas do nome da coluna de relação com projeto
         for campo in ("2026 |  Projetos ", "2026 | Projetos", "2026 |  Projetos",
                       "Projetos", "Projeto", "projeto", "Project"):
             v = props.get(campo, {})
@@ -157,7 +158,6 @@ def extrair(t, usuarios):
                 rels = v.get("relation", [])
                 if rels:
                     return rels[0].get("id") or None
-        # fallback: qualquer campo relation com itens
         for k, v in props.items():
             if v.get("type") == "relation":
                 rels = v.get("relation", [])
@@ -165,72 +165,85 @@ def extrair(t, usuarios):
                     return rels[0].get("id") or None
         return None
 
+    def ler_texto_campo(v):
+        """Lê o valor de texto de um campo de qualquer tipo suportado."""
+        if not v:
+            return None
+        tp = v.get("type")
+        if tp == "rollup":
+            ro = v.get("rollup", {})
+            if ro.get("type") == "string" and ro.get("string"):
+                return ro["string"]
+            for item in ro.get("array", []):
+                for sub_tp in ("title", "rich_text"):
+                    parts = item.get(sub_tp, [])
+                    if parts:
+                        txt = "".join(x["plain_text"] for x in parts)
+                        if txt:
+                            return txt
+                # rollup de select
+                if item.get("type") == "select" and item.get("select"):
+                    return item["select"]["name"]
+                if item.get("type") == "status" and item.get("status"):
+                    return item["status"]["name"]
+        if tp == "title":
+            return "".join(x["plain_text"] for x in v.get("title", [])) or None
+        if tp == "rich_text":
+            return "".join(x["plain_text"] for x in v.get("rich_text", [])) or None
+        if tp == "select" and v.get("select"):
+            return v["select"]["name"]
+        if tp == "status" and v.get("status"):
+            return v["status"]["name"]
+        if tp == "formula":
+            f = v.get("formula", {})
+            if f.get("type") == "string" and f.get("string"):
+                return f["string"]
+        return None
+
     def ler_projeto():
-        # primeiro tenta rollup/fórmula/select/texto com nomes comuns
         for campo in ("Projeto", "projeto", "Project", "Nome do projeto",
                       "Projeto / Cliente", "2026 | Projetos", "2026 |  Projetos "):
-            v = props.get(campo, {})
-            if not v:
-                continue
-            tp = v.get("type")
-            if tp == "rollup":
-                ro = v.get("rollup", {})
-                if ro.get("type") == "string" and ro.get("string"):
-                    return ro["string"]
-                for item in ro.get("array", []):
-                    for sub_tp in ("title", "rich_text"):
-                        parts = item.get(sub_tp, [])
-                        if parts:
-                            txt = "".join(x["plain_text"] for x in parts)
-                            if txt:
-                                return txt
-            if tp == "title":
-                return "".join(x["plain_text"] for x in v.get("title", []))
-            if tp == "rich_text":
-                txt = "".join(x["plain_text"] for x in v.get("rich_text", []))
-                return txt if txt else None
-            if tp == "select" and v.get("select"):
-                return v["select"]["name"]
-            if tp == "formula":
-                f = v.get("formula", {})
-                if f.get("type") == "string" and f.get("string"):
-                    return f["string"]
-        # tenta qualquer campo do tipo rollup que tenha conteúdo
+            resultado = ler_texto_campo(props.get(campo))
+            if resultado:
+                return resultado
+        # fallback: qualquer rollup com conteúdo
         for k, v in props.items():
             if v.get("type") == "rollup":
-                ro = v.get("rollup", {})
-                if ro.get("type") == "string" and ro.get("string"):
-                    return ro["string"]
-                for item in ro.get("array", []):
-                    for sub_tp in ("title", "rich_text"):
-                        parts = item.get(sub_tp, [])
-                        if parts:
-                            txt = "".join(x["plain_text"] for x in parts)
-                            if txt:
-                                return txt
+                resultado = ler_texto_campo(v)
+                if resultado:
+                    return resultado
+        return None
+
+    def ler_status_projeto():
+        for campo in ("Status do Projeto", "Status Projeto", "Status do projeto",
+                      "status do projeto", "Project Status"):
+            resultado = ler_texto_campo(props.get(campo))
+            if resultado:
+                return resultado
         return None
 
     return {
-        "id":           t["id"],
-        "nome":         texto("Tarefa / Projeto") or "(sem nome)",
-        "status":       texto("Status da Tarefa") or "",
-        "etapa":        texto("Etapa") or "",
-        "observacao":   texto("Observação") or "",
-        "d_inicio":     data_campo("D. Início"),
-        "dias_uteis":   numero("Dias úteis"),
-        "feriados":     numero("Feriados") or 0,
-        "responsavel":  responsavel(),
-        "ultima_edicao": data_campo("Última edição") or t.get("last_edited_time"),
-        "rev_licia1":   checkbox("1° | Lícia "),
-        "rev_willian1": checkbox("1° | Willian"),
-        "rev_licia2":   checkbox("2° | Lícia"),
-        "rev_willian2": checkbox("2° | Willian"),
-        "projeto_id":   projeto_id(),
-        "projeto_nome": ler_projeto(),
-        "url":          t.get("url", ""),
-        "d_limite_calc": None,
-        "dias_atraso":  None,
-        "revisao_info": None,
+        "id":              t["id"],
+        "nome":            texto("Tarefa / Projeto") or "(sem nome)",
+        "status":          texto("Status da Tarefa") or "",
+        "etapa":           texto("Etapa") or "",
+        "observacao":      texto("Observação") or "",
+        "d_inicio":        data_campo("D. Início"),
+        "dias_uteis":      numero("Dias úteis"),
+        "feriados":        numero("Feriados") or 0,
+        "responsavel":     responsavel(),
+        "ultima_edicao":   data_campo("Última edição") or t.get("last_edited_time"),
+        "rev_licia1":      checkbox("1° | Lícia "),
+        "rev_willian1":    checkbox("1° | Willian"),
+        "rev_licia2":      checkbox("2° | Lícia"),
+        "rev_willian2":    checkbox("2° | Willian"),
+        "projeto_id":      projeto_id(),
+        "projeto_nome":    ler_projeto(),
+        "projeto_status":  ler_status_projeto(),
+        "url":             t.get("url", ""),
+        "d_limite_calc":   None,
+        "dias_atraso":     None,
+        "revisao_info":    None,
     }
 
 
@@ -916,6 +929,9 @@ def main():
                 detalhe = repr(txt[:60])
             elif tp == "formula":
                 detalhe = repr(v.get("formula", {}))
+            elif tp in ("select", "status"):
+                val = v.get(tp) or {}
+                detalhe = repr(val.get("name", ""))
             else:
                 detalhe = ""
             print(f"  [{tp}] {repr(k)}  {detalhe}")
@@ -944,6 +960,24 @@ def main():
         print(f"{len(ids_vistos)} projetos carregados via API (fallback).")
         com_projeto2 = sum(1 for t in tarefas if t["projeto_nome"])
         print(f"Tarefas com projeto_nome após fallback: {com_projeto2}/{len(tarefas)}")
+
+    # filtra tarefas cujo projeto esteja explicitamente fora dos status ativos
+    antes = len(tarefas)
+    tarefas = [
+        t for t in tarefas
+        if t["projeto_status"] is None or t["projeto_status"] in STATUS_PROJETO_ATIVOS
+    ]
+    removidas = antes - len(tarefas)
+    if removidas:
+        print(f"{removidas} tarefa(s) removida(s) por projeto inativo (status fora de {STATUS_PROJETO_ATIVOS}).")
+    print(f"Tarefas após filtro de status do projeto: {len(tarefas)}")
+
+    # diagnóstico de status de projeto
+    status_vistos = {}
+    for t in ([extrair(r, usuarios) for r in raw]):
+        s = t["projeto_status"] or "(sem status)"
+        status_vistos[s] = status_vistos.get(s, 0) + 1
+    print("Status de projeto encontrados:", status_vistos)
 
     print("Montando relatório...")
     rel = montar(tarefas)
