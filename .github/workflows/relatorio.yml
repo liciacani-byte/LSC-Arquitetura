@@ -1,0 +1,30 @@
+name: Relatório Diário 18h
+ 
+on:
+  schedule:
+    - cron: '0 21 * * 1-5'
+  workflow_dispatch:
+ 
+jobs:
+  relatorio:
+    runs-on: ubuntu-latest
+ 
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+ 
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+ 
+      - name: Instalar dependências
+        run: pip install requests
+ 
+      - name: Rodar relatório
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          EMAIL_DESTINO: ${{ secrets.EMAIL_DESTINO }}
+        run: python relatorio.py
