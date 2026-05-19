@@ -27,6 +27,14 @@ HEADERS = {
 
 _proj_cache = {}
 
+MESES_PT = ["janeiro", "fevereiro", "março", "abril", "maio", "junho",
+            "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"]
+DIAS_PT   = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
+             "sexta-feira", "sábado", "domingo"]
+
+def fmt_data_pt(d):
+    return f"{DIAS_PT[d.weekday()].capitalize()}, {d.day:02d} de {MESES_PT[d.month - 1]} de {d.year}"
+
 
 # ── Helpers de API ──────────────────────────────────────────────────────────────
 
@@ -146,24 +154,34 @@ def extrair(t, usuarios):
         return rels[0].get("id", "") if rels else None
 
     def ler_projeto():
-        v = props.get("Projeto", {})
-        tp = v.get("type")
-        # rollup (tipo mais comum para nome de projeto relacionado)
-        if tp == "rollup":
-            ro = v.get("rollup", {})
-            if ro.get("type") == "string" and ro.get("string"):
-                return ro["string"]
-            for item in ro.get("array", []):
-                for sub_tp in ("title", "rich_text"):
-                    parts = item.get(sub_tp, [])
-                    if parts:
-                        txt = "".join(x["plain_text"] for x in parts)
-                        if txt:
-                            return txt
-        # fórmula, texto, select, status
-        resultado = texto("Projeto")
-        if resultado:
-            return resultado
+        # tenta todas as variações comuns do nome da coluna
+        for campo in ("Projeto", "projeto", "Project", "Nome do projeto",
+                      "Projeto / Cliente", "2026 | Projetos", "2026 |  Projetos "):
+            v = props.get(campo, {})
+            if not v:
+                continue
+            tp = v.get("type")
+            if tp == "rollup":
+                ro = v.get("rollup", {})
+                if ro.get("type") == "string" and ro.get("string"):
+                    return ro["string"]
+                for item in ro.get("array", []):
+                    for sub_tp in ("title", "rich_text"):
+                        parts = item.get(sub_tp, [])
+                        if parts:
+                            txt = "".join(x["plain_text"] for x in parts)
+                            if txt:
+                                return txt
+            if tp == "title":
+                return "".join(x["plain_text"] for x in v.get("title", []))
+            if tp == "rich_text":
+                return "".join(x["plain_text"] for x in v.get("rich_text", []))
+            if tp == "select" and v.get("select"):
+                return v["select"]["name"]
+            if tp == "formula":
+                f = v.get("formula", {})
+                if f.get("type") == "string" and f.get("string"):
+                    return f["string"]
         return None
 
     return {
@@ -465,7 +483,7 @@ def divider():
 
 def gerar_html(rel):
     hoje      = rel["hoje"]
-    hoje_str  = hoje.strftime("%A, %d de %B de %Y").capitalize()
+    hoje_str  = fmt_data_pt(hoje)
     aguarda_licia_externos = [
         t for t in rel["aguarda_licia"] if t["id"] not in {x["id"] for x in rel["licia"]}
     ]
@@ -809,7 +827,6 @@ def gerar_html(rel):
         + '</div>'
     )
 
-    # ── HTML final ───────────────────────────────────────────────────────────────
     corpo = (
         cards
         + s1 + divider()
@@ -859,11 +876,33 @@ def main():
     raw = buscar_tarefas()
     print(f"{len(raw)} tarefas encontradas.")
 
+    if raw:
+        print("=== DIAGNÓSTICO: propriedades da 1ª tarefa ===")
+        for k, v in raw[0].get("properties", {}).items():
+            tp = v.get("type", "?")
+            # mostra valor resumido para ajudar a identificar o campo de projeto
+            if tp == "rollup":
+                ro = v.get("rollup", {})
+                detalhe = f"rollup/{ro.get('type','?')}"
+            elif tp == "relation":
+                detalhe = f"relation, {len(v.get('relation',[]))} item(s)"
+            elif tp in ("title", "rich_text"):
+                txt = "".join(x.get("plain_text","") for x in v.get(tp, []))
+                detalhe = repr(txt[:60])
+            elif tp == "formula":
+                detalhe = repr(v.get("formula", {}))
+            else:
+                detalhe = ""
+            print(f"  [{tp}] {repr(k)}  {detalhe}")
+        print("=== FIM DIAGNÓSTICO ===")
+
     print("Extraindo campos...")
     tarefas = [extrair(t, usuarios) for t in raw]
 
-    # fallback: busca nome do projeto via API para tarefas sem coluna Projeto preenchida
-    print("Buscando nomes dos projetos (fallback API)...")
+    com_projeto = sum(1 for t in tarefas if t["projeto_nome"])
+    print(f"Tarefas com projeto_nome preenchido: {com_projeto}/{len(tarefas)}")
+
+    # fallback: busca via API para tarefas sem projeto identificado
     ids_vistos = set()
     for t in tarefas:
         if t["projeto_nome"]:
@@ -876,7 +915,8 @@ def main():
             t["projeto_nome"] = buscar_nome_projeto(pid)
         else:
             t["projeto_nome"] = _proj_cache.get(pid.replace("-", ""))
-    print(f"{len(ids_vistos)} projetos carregados via API (fallback).")
+    if ids_vistos:
+        print(f"{len(ids_vistos)} projetos carregados via API (fallback).")
 
     print("Montando relatório...")
     rel = montar(tarefas)
