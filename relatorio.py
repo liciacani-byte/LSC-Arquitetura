@@ -32,10 +32,20 @@ MESES_PT = ["janeiro", "fevereiro", "março", "abril", "maio", "junho",
 DIAS_PT   = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
              "sexta-feira", "sábado", "domingo"]
 
-STATUS_PROJETO_ATIVOS = {"Em andamento | Criação", "Em andamento | Detalhamento"}
+# palavras-chave que indicam projeto encerrado (case-insensitive, busca parcial)
+STATUS_PROJETO_INATIVO = {"finalizado", "cancelado", "arquivado", "concluído", "concluido", "suspenso"}
+
 
 def fmt_data_pt(d):
     return f"{DIAS_PT[d.weekday()].capitalize()}, {d.day:02d} de {MESES_PT[d.month - 1]} de {d.year}"
+
+
+def projeto_inativo(status_str):
+    """Retorna True se o status do projeto indicar encerramento."""
+    if not status_str:
+        return False
+    s = status_str.lower()
+    return any(palavra in s for palavra in STATUS_PROJETO_INATIVO)
 
 
 # ── Helpers de API ──────────────────────────────────────────────────────────────
@@ -151,13 +161,14 @@ def extrair(t, usuarios):
         return {"id": "", "nome": ""}
 
     def projeto_id():
-        for campo in ("2026 |  Projetos ", "2026 | Projetos", "2026 |  Projetos",
-                      "Projetos", "Projeto", "projeto", "Project"):
+        for campo in ("Projeto", "2026 |  Projetos ", "2026 | Projetos",
+                      "Projetos", "projeto", "Project"):
             v = props.get(campo, {})
             if v.get("type") == "relation":
                 rels = v.get("relation", [])
                 if rels:
                     return rels[0].get("id") or None
+        # fallback: qualquer relation com itens
         for k, v in props.items():
             if v.get("type") == "relation":
                 rels = v.get("relation", [])
@@ -165,12 +176,39 @@ def extrair(t, usuarios):
                     return rels[0].get("id") or None
         return None
 
-    def ler_texto_campo(v):
-        """Lê o valor de texto de um campo de qualquer tipo suportado."""
-        if not v:
-            return None
-        tp = v.get("type")
-        if tp == "rollup":
+    def ler_projeto():
+        # tenta campos textuais com nomes comuns
+        for campo in ("Projeto", "projeto", "Project", "Nome do projeto",
+                      "Projeto / Cliente", "2026 | Projetos", "2026 |  Projetos "):
+            v = props.get(campo)
+            if not v:
+                continue
+            tp = v.get("type")
+            if tp == "rollup":
+                ro = v.get("rollup", {})
+                if ro.get("type") == "string" and ro.get("string"):
+                    return ro["string"]
+                for item in ro.get("array", []):
+                    for sub_tp in ("title", "rich_text"):
+                        parts = item.get(sub_tp, [])
+                        if parts:
+                            txt = "".join(x["plain_text"] for x in parts)
+                            if txt:
+                                return txt
+            if tp == "title":
+                return "".join(x["plain_text"] for x in v.get("title", [])) or None
+            if tp == "rich_text":
+                return "".join(x["plain_text"] for x in v.get("rich_text", [])) or None
+            if tp == "select" and v.get("select"):
+                return v["select"]["name"]
+            if tp == "formula":
+                f = v.get("formula", {})
+                if f.get("type") == "string" and f.get("string"):
+                    return f["string"]
+        # fallback: rollups que só tenham conteúdo textual (title/rich_text), nunca status/select
+        for k, v in props.items():
+            if v.get("type") != "rollup":
+                continue
             ro = v.get("rollup", {})
             if ro.get("type") == "string" and ro.get("string"):
                 return ro["string"]
@@ -181,45 +219,31 @@ def extrair(t, usuarios):
                         txt = "".join(x["plain_text"] for x in parts)
                         if txt:
                             return txt
-                # rollup de select
-                if item.get("type") == "select" and item.get("select"):
-                    return item["select"]["name"]
-                if item.get("type") == "status" and item.get("status"):
-                    return item["status"]["name"]
-        if tp == "title":
-            return "".join(x["plain_text"] for x in v.get("title", [])) or None
-        if tp == "rich_text":
-            return "".join(x["plain_text"] for x in v.get("rich_text", [])) or None
-        if tp == "select" and v.get("select"):
-            return v["select"]["name"]
-        if tp == "status" and v.get("status"):
-            return v["status"]["name"]
-        if tp == "formula":
-            f = v.get("formula", {})
-            if f.get("type") == "string" and f.get("string"):
-                return f["string"]
-        return None
-
-    def ler_projeto():
-        for campo in ("Projeto", "projeto", "Project", "Nome do projeto",
-                      "Projeto / Cliente", "2026 | Projetos", "2026 |  Projetos "):
-            resultado = ler_texto_campo(props.get(campo))
-            if resultado:
-                return resultado
-        # fallback: qualquer rollup com conteúdo
-        for k, v in props.items():
-            if v.get("type") == "rollup":
-                resultado = ler_texto_campo(v)
-                if resultado:
-                    return resultado
         return None
 
     def ler_status_projeto():
         for campo in ("Status do Projeto", "Status Projeto", "Status do projeto",
                       "status do projeto", "Project Status"):
-            resultado = ler_texto_campo(props.get(campo))
-            if resultado:
-                return resultado
+            v = props.get(campo)
+            if not v:
+                continue
+            tp = v.get("type")
+            if tp == "rollup":
+                ro = v.get("rollup", {})
+                if ro.get("type") == "string" and ro.get("string"):
+                    return ro["string"]
+                for item in ro.get("array", []):
+                    if item.get("type") == "status" and item.get("status"):
+                        return item["status"]["name"]
+                    if item.get("type") == "select" and item.get("select"):
+                        return item["select"]["name"]
+            if tp in ("select", "status"):
+                val = v.get(tp) or {}
+                return val.get("name") or None
+            if tp == "formula":
+                f = v.get("formula", {})
+                if f.get("type") == "string" and f.get("string"):
+                    return f["string"]
         return None
 
     return {
@@ -418,7 +442,8 @@ def badge(status):
     c, bg = BADGE_CORES.get(status, ("#555", "#f0f0f0"))
     return (
         f'<span style="display:inline-block;font-size:10px;padding:2px 8px;'
-        f'border-radius:99px;font-weight:500;background:{bg};color:{c};">'        f'{status}</span>'
+        f'border-radius:99px;font-weight:500;background:{bg};color:{c};">'
+        f'{status}</span>'
     )
 
 
@@ -555,7 +580,8 @@ def gerar_html(rel):
             atraso_str = str(t["dias_atraso"]) + "d"
             resp_nome = t["responsavel"]["nome"] or "—"
             linhas.append(
-                f'<tr>{celula_tarefa(t)}{td(badge(t["status"]))}'                f'{td(resp_nome, nowrap=True)}'
+                f'<tr>{celula_tarefa(t)}{td(badge(t["status"]))}'
+                f'{td(resp_nome, nowrap=True)}'
                 f'{td(atraso_str, cor="#e53e3e", negrito=True)}</tr>'
             )
         s1_atrasadas = tabela_wrap(linhas, ["Projeto / Tarefa", "Status", "Responsável", "Atraso"])
@@ -567,7 +593,8 @@ def gerar_html(rel):
         for t in rel["vencem3"]:
             resp_nome = t["responsavel"]["nome"] or "—"
             linhas.append(
-                f'<tr>{celula_tarefa(t)}{td(badge(t["status"]))}'                f'{td(resp_nome)}'
+                f'<tr>{celula_tarefa(t)}{td(badge(t["status"]))}'
+                f'{td(resp_nome)}'
                 f'{td(fmt_d(t["d_limite_calc"]), cor="#c05621")}</tr>'
             )
         s1_vence3 = tabela_wrap(linhas, ["Projeto / Tarefa", "Status", "Responsável", "Limite"])
@@ -913,7 +940,7 @@ def main():
     print(f"{len(raw)} tarefas encontradas.")
 
     if raw:
-        print("=== DIAGNÓSTICO: propriedades da 1ª tarefa ===")
+        print("=== DIAGNÓSTICO ===")
         for k, v in raw[0].get("properties", {}).items():
             tp = v.get("type", "?")
             if tp == "rollup":
@@ -921,14 +948,14 @@ def main():
                 detalhe = f"rollup/{ro.get('type','?')}"
                 if ro.get("type") == "array":
                     for item in ro.get("array", [])[:1]:
-                        detalhe += f" array[0]={list(item.keys())}"
+                        detalhe += f" item_type={item.get('type')} item_keys={list(item.keys())}"
+                        if item.get("type") == "status" and item.get("status"):
+                            detalhe += f" nome={repr(item['status'].get('name',''))}"
             elif tp == "relation":
                 detalhe = f"relation, {len(v.get('relation',[]))} item(s)"
             elif tp in ("title", "rich_text"):
                 txt = "".join(x.get("plain_text","") for x in v.get(tp, []))
                 detalhe = repr(txt[:60])
-            elif tp == "formula":
-                detalhe = repr(v.get("formula", {}))
             elif tp in ("select", "status"):
                 val = v.get(tp) or {}
                 detalhe = repr(val.get("name", ""))
@@ -958,26 +985,19 @@ def main():
             t["projeto_nome"] = _proj_cache.get(pid.replace("-", ""))
     if ids_vistos:
         print(f"{len(ids_vistos)} projetos carregados via API (fallback).")
-        com_projeto2 = sum(1 for t in tarefas if t["projeto_nome"])
-        print(f"Tarefas com projeto_nome após fallback: {com_projeto2}/{len(tarefas)}")
 
-    # filtra tarefas cujo projeto esteja explicitamente fora dos status ativos
-    antes = len(tarefas)
-    tarefas = [
-        t for t in tarefas
-        if t["projeto_status"] is None or t["projeto_status"] in STATUS_PROJETO_ATIVOS
-    ]
-    removidas = antes - len(tarefas)
-    if removidas:
-        print(f"{removidas} tarefa(s) removida(s) por projeto inativo (status fora de {STATUS_PROJETO_ATIVOS}).")
-    print(f"Tarefas após filtro de status do projeto: {len(tarefas)}")
-
-    # diagnóstico de status de projeto
-    status_vistos = {}
-    for t in ([extrair(r, usuarios) for r in raw]):
+    # diagnóstico: status de projeto encontrados
+    status_freq = {}
+    for t in tarefas:
         s = t["projeto_status"] or "(sem status)"
-        status_vistos[s] = status_vistos.get(s, 0) + 1
-    print("Status de projeto encontrados:", status_vistos)
+        status_freq[s] = status_freq.get(s, 0) + 1
+    print("Status de projeto encontrados:", status_freq)
+
+    # exclui tarefas cujo projeto esteja explicitamente encerrado
+    antes = len(tarefas)
+    tarefas = [t for t in tarefas if not projeto_inativo(t["projeto_status"])]
+    removidas = antes - len(tarefas)
+    print(f"Tarefas após filtro de projeto encerrado: {len(tarefas)} ({removidas} removidas)")
 
     print("Montando relatório...")
     rel = montar(tarefas)
