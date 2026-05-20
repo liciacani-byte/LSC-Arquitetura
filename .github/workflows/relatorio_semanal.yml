@@ -5,9 +5,6 @@ on:
     - cron: '0 21 * * 5'   # sexta-feira 18h BRT (UTC-3)
   workflow_dispatch:
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   relatorio-semanal:
     runs-on: ubuntu-latest

@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """
 Relatório Semanal de Horas — LSC Arquitetura
-Toda sexta às 18h (BRT): agrega horas e custos por projeto/pessoa
-(semana atual + acumulado total) e envia e-mail HTML.
+Toda sexta às 18h (BRT).
+
+Seção 1 — Horas na Semana: por pessoa (Lícia / Willian), lista de projetos
+           com tempo e custo desta semana.
+Seção 2 — Custo por Projeto: todos projetos ativos, tempo e custo acumulados
+           por Lícia e Willian.
 """
 
+import json
 import os
 import smtplib
 import requests
@@ -107,25 +112,26 @@ def info_projeto(pid):
     return _proj_cache[key]["nome"], _proj_cache[key]["status"]
 
 
-# ── Extração de campos ──────────────────────────────────────────────────────────
+# ── Leitura de campos ────────────────────────────────────────────────────────────
 
-def _formula_num(v):
+def _ler_formula(v):
     """
-    Lê campo fórmula do Notion que pode retornar:
-      - type "number"  → float direto
-      - type "string"  → "R$ 1.234,56" ou "150,5" → float parseado
+    Lê campo fórmula. Notion pode retornar:
+      type "number"  → float direto
+      type "string"  → "R$ 1.234,56" ou "1.234,56" → parse BR
+      type "boolean" / null → 0
     """
     if v.get("type") != "formula":
         return 0.0
-    f = v["formula"]
+    f = v.get("formula", {})
     if f.get("type") == "number":
         n = f.get("number")
         return float(n) if n is not None else 0.0
     if f.get("type") == "string":
-        s = (f.get("string") or "").replace("R$", "").replace(" ", "").strip()
-        # Formato BR: pontos são separadores de milhar, vírgula é decimal
-        # Ex: "1.234,56" → remove pontos → "1234,56" → troca vírgula → "1234.56"
-        s = s.replace(".", "").replace(",", ".")
+        # "R$ 1.234,56" → remove símbolo e espaços → "1.234,56"
+        # ponto = milhar, vírgula = decimal (formato BR)
+        s = (f.get("string") or "").replace("R$", "").replace(" ", "")
+        s = s.replace(".", "").replace(",", ".")   # "1234.56"
         try:
             return float(s)
         except ValueError:
@@ -133,11 +139,45 @@ def _formula_num(v):
     return 0.0
 
 
+def _ler_rollup_number(v):
+    """Lê rollup do tipo number (aggregation: sum)."""
+    if v.get("type") != "rollup":
+        return 0.0
+    ro = v.get("rollup", {})
+    if ro.get("type") == "number":
+        n = ro.get("number")
+        return float(n) if n is not None else 0.0
+    return 0.0
+
+
+def debug_custo(raw_registros):
+    """Imprime campos de custo dos primeiros 5 registros com projeto — visível no log do Actions."""
+    count = 0
+    for r in raw_registros:
+        props = r.get("properties", {})
+        if not props.get("2026 | Projetos", {}).get("relation"):
+            continue
+        if count >= 5:
+            break
+        count += 1
+        print(f"\n=== DEBUG CUSTO — registro {count} ===")
+        for campo in ["Minutos", "Custo", "V.H Escritório", "V.H. Equipe"]:
+            raw = props.get(campo, "NÃO ENCONTRADO")
+            print(f"  {campo}: {json.dumps(raw, ensure_ascii=False, default=str)[:300]}")
+
+
 def extrair(r):
     props = r.get("properties", {})
 
-    def formula_num(campo):
-        return max(0.0, _formula_num(props.get(campo, {})))
+    minutos = max(0.0, _ler_formula(props.get("Minutos", {})))
+
+    # Custo: tenta fórmula; se zero, tenta calcular via rollups V.H.
+    custo = max(0.0, _ler_formula(props.get("Custo", {})))
+    if custo == 0.0 and minutos > 0:
+        vh = (_ler_rollup_number(props.get("V.H Escritório", {}))
+              + _ler_rollup_number(props.get("V.H. Equipe", {})))
+        if vh > 0:
+            custo = (minutos / 60.0) * vh
 
     def data_inicio():
         v = props.get("Inicio", {})
@@ -176,8 +216,8 @@ def extrair(r):
         "inicio":         data_inicio(),
         "criado_por":     criado_por(),
         "projeto_id":     projeto_id(),
-        "minutos":        formula_num("Minutos"),
-        "custo":          formula_num("Custo"),
+        "minutos":        minutos,
+        "custo":          custo,
         "status_projeto": status_projeto(),
     }
 
@@ -197,6 +237,19 @@ def eh_inativo(status):
     if not status:
         return False
     return any(s in status.lower() for s in STATUS_INATIVO)
+
+
+def eh_ativo_secao2(status):
+    """
+    Seção 2 exibe projetos em criação ou detalhamento.
+    Se o status não for reconhecido inclui por precaução.
+    """
+    if not status:
+        return True
+    if eh_inativo(status):
+        return False
+    s = status.lower()
+    return any(k in s for k in ("criação", "criacao", "detalhamento", "andamento", "ativo"))
 
 
 # ── Agregação ───────────────────────────────────────────────────────────────────
@@ -219,11 +272,13 @@ def agregar(registros, seg, sex):
             bruto[pid] = {"semana": {}, "total": {}}
         p = bruto[pid]
 
+        # acumulado total
         if pessoa not in p["total"]:
             p["total"][pessoa] = _z()
         p["total"][pessoa]["min"]   += reg["minutos"]
         p["total"][pessoa]["custo"] += reg["custo"]
 
+        # semana corrente
         ini = reg["inicio"]
         if ini and seg <= ini <= sex:
             if pessoa not in p["semana"]:
@@ -236,7 +291,8 @@ def agregar(registros, seg, sex):
         nome, status = info_projeto(pid)
         if eh_inativo(status):
             continue
-        dados["nome"] = nome or pid
+        dados["nome"]           = nome or pid
+        dados["status_projeto"] = status
         projetos[pid] = dados
 
     return projetos
@@ -244,9 +300,9 @@ def agregar(registros, seg, sex):
 
 # ── HTML helpers ─────────────────────────────────────────────────────────────────
 
-_TD  = "padding:10px 12px;font-size:13px;vertical-align:middle;border-bottom:1px solid #f8f8f8;"
-_TH  = ("text-align:{align};font-size:10px;text-transform:uppercase;letter-spacing:.5px;"
-        "color:#aaa;padding:8px 12px;border-bottom:1px solid #f0f0f0;font-weight:500;")
+_TD = "padding:10px 12px;font-size:13px;vertical-align:middle;border-bottom:1px solid #f8f8f8;"
+_TH = ("text-align:{align};font-size:10px;text-transform:uppercase;letter-spacing:.5px;"
+       "color:#aaa;padding:8px 12px;border-bottom:1px solid #f0f0f0;font-weight:500;")
 
 
 def th(txt, align="right"):
@@ -263,7 +319,7 @@ def td(txt, bold=False, align="left", cor=None, bg=None):
 
 def table_wrap(thead, tbody):
     return (
-        '<div style="border:1px solid #eee;border-radius:8px;overflow:hidden;margin-bottom:10px;">'
+        '<div style="border:1px solid #eee;border-radius:8px;overflow:hidden;margin-bottom:14px;">'
         '<table style="width:100%;border-collapse:collapse;font-size:13px;">'
         f'<thead><tr>{thead}</tr></thead>'
         f'<tbody>{tbody}</tbody>'
@@ -278,31 +334,23 @@ def sec_title(txt):
     )
 
 
-def proj_title(nome):
+def sub_title(txt, n=None):
+    cnt = (
+        f'<span style="background:#f0f0f0;color:#888;font-size:10px;padding:1px 6px;'
+        f'border-radius:99px;font-weight:500;margin-left:6px;">{n}</span>'
+    ) if n is not None else ""
+    return f'<p style="margin:0 0 10px;font-size:12px;font-weight:600;color:#555;">{txt}{cnt}</p>'
+
+
+def proj_label(nome):
     return (
         f'<p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#1a1a1a;">{nome}</p>'
     )
 
 
-def custo_lines(cs, ct):
-    def row(label, d):
-        l = fmt_r(d.get("Lícia", 0))
-        w = fmt_r(d.get("Willian", 0))
-        t = fmt_r(sum(d.values()))
-        return (
-            f'<p style="margin:3px 0;font-size:12px;color:#555;">'
-            f'<span style="color:#bbb;display:inline-block;width:90px;">{label}</span>'
-            f'Lícia&nbsp;{l}&nbsp; &middot; &nbsp;Willian&nbsp;{w}&nbsp; &middot; &nbsp;Total&nbsp;{t}'
-            f'</p>'
-        )
-    return row("Custo semana", cs) + row("Custo total", ct)
-
-
 def divider():
     return '<hr style="border:none;border-top:1px solid #f0f0f0;margin:26px 0;">'
 
-
-# ── Cards de resumo ──────────────────────────────────────────────────────────────
 
 def card(label, valor, cor_label, cor_valor, bg):
     return (
@@ -320,122 +368,132 @@ def gerar_html(projetos, seg, sex):
     data_fim = f"{sex.day:02d}/{MESES_ABREV[sex.month - 1]}/{sex.year}"
     periodo  = f"{data_ini} a {data_fim}"
 
-    # Acumuladores consolidados
-    esc_sem = {p: _z() for p in PESSOAS}
-    esc_tot = {p: _z() for p in PESSOAS}
+    # ── totais consolidados para os cards ──────────────────────────────────────
+    sem_min = sem_cst = tot_min = 0.0
     for proj in projetos.values():
         for p in PESSOAS:
-            esc_sem[p]["min"]   += proj["semana"].get(p, _z())["min"]
-            esc_sem[p]["custo"] += proj["semana"].get(p, _z())["custo"]
-            esc_tot[p]["min"]   += proj["total"].get(p,  _z())["min"]
-            esc_tot[p]["custo"] += proj["total"].get(p,  _z())["custo"]
+            sem_min += proj["semana"].get(p, _z())["min"]
+            sem_cst += proj["semana"].get(p, _z())["custo"]
+            tot_min += proj["total"].get(p,  _z())["min"]
 
-    sem_min   = sum(v["min"]   for v in esc_sem.values())
-    sem_custo = sum(v["custo"] for v in esc_sem.values())
-    tot_min   = sum(v["min"]   for v in esc_tot.values())
-    tot_custo = sum(v["custo"] for v in esc_tot.values())
-
-    n_total = len(projetos)
+    n_total  = len(projetos)
     n_semana = sum(
         1 for p in projetos.values()
         if any(p["semana"].get(pe, _z())["min"] > 0 for pe in PESSOAS)
     )
 
-    # Cards
     cards_html = (
         '<div style="display:flex;gap:10px;margin-bottom:28px;flex-wrap:wrap;">'
-        + card("Horas na semana", fmt_h(sem_min),   "#2c5282", "#2c5282", "#ebf4ff")
-        + card("Custo semana",    fmt_r(sem_custo),  "#276749", "#276749", "#f0fff4")
-        + card("Horas acumuladas",fmt_h(tot_min),   "#92400e", "#92400e", "#fffbeb")
-        + card("Projetos ativos", f"{n_semana} / {n_total}", "#555", "#1a1a1a", "#f7f7f7")
+        + card("Horas na semana",  fmt_h(sem_min), "#2c5282", "#2c5282", "#ebf4ff")
+        + card("Custo semana",     fmt_r(sem_cst), "#276749", "#276749", "#f0fff4")
+        + card("Horas acumuladas", fmt_h(tot_min), "#92400e", "#92400e", "#fffbeb")
+        + card("Projetos ativos",  f"{n_semana} / {n_total}", "#555", "#1a1a1a", "#f7f7f7")
         + '</div>'
     )
 
-    # Projetos: primeiro os que têm horas na semana, depois o resto
-    proj_ordenados = sorted(
-        projetos.items(),
-        key=lambda x: (
-            -sum(x[1]["semana"].get(p, _z())["min"] for p in PESSOAS),
-            x[1]["nome"],
-        ),
+    # ── Seção 1: Horas na Semana ───────────────────────────────────────────────
+    thead_sem = th("Projeto", align="left") + th("Tempo") + th("Custo semana")
+
+    def pessoa_tabela_semana(pessoa):
+        linhas = [
+            (proj["nome"], proj["semana"].get(pessoa, _z()))
+            for proj in projetos.values()
+            if proj["semana"].get(pessoa, _z())["min"] > 0
+        ]
+        if not linhas:
+            return (
+                f'<p style="color:#bbb;font-size:13px;font-style:italic;'
+                f'padding:6px 0;">Sem horas registradas nesta semana.</p>'
+            )
+        linhas.sort(key=lambda x: -x[1]["min"])
+        tbody = ""
+        t_min = t_cst = 0.0
+        for nome, d in linhas:
+            t_min += d["min"]
+            t_cst += d["custo"]
+            tbody += (
+                "<tr>"
+                + td(nome)
+                + td(fmt_h(d["min"]), align="right", cor="#1a1a1a")
+                + td(fmt_r(d["custo"]), align="right", cor="#276749")
+                + "</tr>"
+            )
+        tbody += (
+            "<tr>"
+            + td("Total", bold=True, bg="#fafafa")
+            + td(fmt_h(t_min), bold=True, align="right", bg="#fafafa")
+            + td(fmt_r(t_cst), bold=True, align="right", cor="#276749", bg="#fafafa")
+            + "</tr>"
+        )
+        return table_wrap(thead_sem, tbody)
+
+    s1_licia   = sub_title("Lícia")   + pessoa_tabela_semana("Lícia")
+    s1_willian = sub_title("Willian") + pessoa_tabela_semana("Willian")
+
+    s1 = (
+        '<div style="margin-bottom:26px;">'
+        + sec_title("Seção 1 — Horas na Semana")
+        + s1_licia
+        + s1_willian
+        + '</div>'
     )
 
-    thead = th("", align="left") + th("Semana") + th("Total")
+    # ── Seção 2: Custo por Projeto ─────────────────────────────────────────────
+    thead_proj = (
+        th("", align="left")
+        + th("Tempo total")
+        + th("Custo total")
+    )
+
+    proj_s2 = {
+        pid: p for pid, p in projetos.items()
+        if eh_ativo_secao2(p.get("status_projeto"))
+    }
+    # fallback: se nenhum passa no filtro, mostra todos ativos
+    if not proj_s2:
+        proj_s2 = projetos
+
+    proj_s2_ordenados = sorted(proj_s2.items(), key=lambda x: x[1]["nome"])
+
     projetos_html = ""
-
-    for _, proj in proj_ordenados:
-        tbody  = ""
-        p_sem  = p_tot = 0.0
-
+    for _, proj in proj_s2_ordenados:
+        tbody = ""
+        t_min = t_cst = 0.0
         for pessoa in PESSOAS:
-            sem = proj["semana"].get(pessoa, _z())["min"]
-            tot = proj["total"].get(pessoa,  _z())["min"]
-            p_sem += sem
-            p_tot += tot
+            d = proj["total"].get(pessoa, _z())
+            t_min += d["min"]
+            t_cst += d["custo"]
             tbody += (
-                f'<tr>'
+                "<tr>"
                 + td(pessoa)
-                + td(fmt_h(sem), align="right", cor="#1a1a1a")
-                + td(fmt_h(tot), align="right", cor="#666")
-                + '</tr>'
+                + td(fmt_h(d["min"]), align="right", cor="#1a1a1a")
+                + td(fmt_r(d["custo"]), align="right", cor="#276749")
+                + "</tr>"
             )
-
         tbody += (
-            f'<tr>'
+            "<tr>"
             + td("Total", bold=True, bg="#fafafa")
-            + td(fmt_h(p_sem), bold=True, align="right", bg="#fafafa")
-            + td(fmt_h(p_tot), bold=True, align="right", cor="#666", bg="#fafafa")
-            + '</tr>'
+            + td(fmt_h(t_min), bold=True, align="right", bg="#fafafa")
+            + td(fmt_r(t_cst), bold=True, align="right", cor="#276749", bg="#fafafa")
+            + "</tr>"
         )
-
-        cs = {p: proj["semana"].get(p, _z())["custo"] for p in PESSOAS}
-        ct = {p: proj["total"].get(p,  _z())["custo"] for p in PESSOAS}
-
-        tem_semana = p_sem > 0
-        wrapper_st = "" if tem_semana else "opacity:.75;"
-
         projetos_html += (
-            f'<div style="margin-bottom:22px;{wrapper_st}">'
-            + proj_title(proj["nome"])
-            + table_wrap(thead, tbody)
-            + custo_lines(cs, ct)
+            '<div style="margin-bottom:20px;">'
+            + proj_label(proj["nome"])
+            + table_wrap(thead_proj, tbody)
             + '</div>'
         )
 
-    # Consolidado
-    tbody_consol = ""
-    for pessoa in PESSOAS:
-        tbody_consol += (
-            f'<tr>'
-            + td(pessoa)
-            + td(fmt_h(esc_sem[pessoa]["min"]), align="right", cor="#1a1a1a")
-            + td(fmt_h(esc_tot[pessoa]["min"]), align="right", cor="#666")
-            + '</tr>'
-        )
-    tbody_consol += (
-        f'<tr>'
-        + td("Total", bold=True, bg="#fafafa")
-        + td(fmt_h(sem_min), bold=True, align="right", bg="#fafafa")
-        + td(fmt_h(tot_min), bold=True, align="right", cor="#666", bg="#fafafa")
-        + '</tr>'
-    )
-    cs_esc = {p: esc_sem[p]["custo"] for p in PESSOAS}
-    ct_esc = {p: esc_tot[p]["custo"] for p in PESSOAS}
-
-    consol_html = (
-        sec_title("Consolidado do Escritório")
-        + table_wrap(thead, tbody_consol)
-        + custo_lines(cs_esc, ct_esc)
-    )
-
-    corpo = (
-        cards_html
-        + sec_title(f"Projetos — {n_semana} com horas nesta semana")
+    s2 = (
+        '<div style="margin-bottom:26px;">'
+        + sec_title(f"Seção 2 — Custo por Projeto ({len(proj_s2)} projetos ativos)")
         + projetos_html
-        + divider()
-        + consol_html
-        + '<p style="text-align:right;font-size:11px;color:#ccc;margin:24px 0 0;">'
-          'Gerado automaticamente · LSC Arquitetura</p>'
+        + '</div>'
+    )
+
+    corpo = cards_html + s1 + divider() + s2 + (
+        '<p style="text-align:right;font-size:11px;color:#ccc;margin:24px 0 0;">'
+        'Gerado automaticamente · LSC Arquitetura</p>'
     )
 
     return (
@@ -445,8 +503,6 @@ def gerar_html(projetos, seg, sex):
         '<body style="margin:0;padding:0;background:#f0f0f0;'
         'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;color:#1a1a1a;">'
         '<div style="max-width:720px;margin:32px auto;">'
-
-        # Header escuro
         '<div style="background:#1a1a1a;padding:24px 28px;border-radius:10px 10px 0 0;">'
         '<p style="margin:0;color:#666;font-size:11px;text-transform:uppercase;'
         'letter-spacing:1.5px;">Relatório Semanal · LSC Arquitetura</p>'
@@ -454,8 +510,6 @@ def gerar_html(projetos, seg, sex):
         f'<p style="margin:4px 0 0;color:#888;font-size:12px;">'
         f'{n_total} projetos · Gerado automaticamente</p>'
         '</div>'
-
-        # Corpo branco
         f'<div style="background:#fff;padding:28px;border-radius:0 0 10px 10px;">{corpo}</div>'
         '</div></body></html>'
     )
@@ -464,47 +518,40 @@ def gerar_html(projetos, seg, sex):
 # ── Texto plano (fallback) ───────────────────────────────────────────────────────
 
 def gerar_texto(projetos, seg, sex):
-    linhas = []
     sep    = "━" * 38
-    linhas.append(f"RELATÓRIO SEMANAL — {seg.day:02d} a {sex.day:02d}/{MESES_ABREV[sex.month-1]}/{sex.year}")
+    linhas = [f"RELATÓRIO SEMANAL — {seg.day:02d} a {sex.day:02d}/{MESES_ABREV[sex.month-1]}/{sex.year}"]
 
-    esc_sem = {p: _z() for p in PESSOAS}
-    esc_tot = {p: _z() for p in PESSOAS}
+    linhas += ["", sep, "SEÇÃO 1 — HORAS NA SEMANA", sep]
+    for pessoa in PESSOAS:
+        linhas += ["", f"  {pessoa.upper()}"]
+        itens = [
+            (proj["nome"], proj["semana"].get(pessoa, _z()))
+            for proj in projetos.values()
+            if proj["semana"].get(pessoa, _z())["min"] > 0
+        ]
+        itens.sort(key=lambda x: -x[1]["min"])
+        if not itens:
+            linhas.append("  Sem horas nesta semana.")
+            continue
+        t_min = t_cst = 0.0
+        for nome, d in itens:
+            t_min += d["min"]; t_cst += d["custo"]
+            linhas.append(f"  {nome:<35}  {fmt_h(d['min']):>10}  {fmt_r(d['custo']):>12}")
+        linhas.append(f"  {'Total':<35}  {fmt_h(t_min):>10}  {fmt_r(t_cst):>12}")
 
-    for proj in sorted(projetos.values(), key=lambda x: x["nome"]):
-        linhas += ["", sep, f"PROJETO | {proj['nome']}", sep, ""]
-        linhas.append(f"{'':15}{'SEMANA':>12}{'TOTAL':>14}")
-        s_min = t_min = 0.0
-
+    linhas += ["", sep, "SEÇÃO 2 — CUSTO POR PROJETO", sep]
+    proj_s2 = {pid: p for pid, p in projetos.items() if eh_ativo_secao2(p.get("status_projeto"))}
+    if not proj_s2:
+        proj_s2 = projetos
+    for proj in sorted(proj_s2.values(), key=lambda x: x["nome"]):
+        linhas += ["", f"  {proj['nome']}"]
+        t_min = t_cst = 0.0
         for pessoa in PESSOAS:
-            s = proj["semana"].get(pessoa, _z())["min"]
-            t = proj["total"].get(pessoa,  _z())["min"]
-            s_min += s; t_min += t
-            linhas.append(f"{pessoa:<15}{fmt_h(s):>12}{fmt_h(t):>14}")
-            esc_sem[pessoa]["min"]   += s
-            esc_sem[pessoa]["custo"] += proj["semana"].get(pessoa, _z())["custo"]
-            esc_tot[pessoa]["min"]   += t
-            esc_tot[pessoa]["custo"] += proj["total"].get(pessoa,  _z())["custo"]
+            d = proj["total"].get(pessoa, _z())
+            t_min += d["min"]; t_cst += d["custo"]
+            linhas.append(f"    {pessoa:<10}  {fmt_h(d['min']):>10}  {fmt_r(d['custo']):>12}")
+        linhas.append(f"    {'Total':<10}  {fmt_h(t_min):>10}  {fmt_r(t_cst):>12}")
 
-        linhas.append(f"{'Total':<15}{fmt_h(s_min):>12}{fmt_h(t_min):>14}")
-        linhas.append("")
-        cs = {p: proj["semana"].get(p, _z())["custo"] for p in PESSOAS}
-        ct = {p: proj["total"].get(p,  _z())["custo"] for p in PESSOAS}
-        linhas.append(f"Custo semana:   Lícia {fmt_r(cs['Lícia'])}  |  Willian {fmt_r(cs['Willian'])}  |  Total {fmt_r(sum(cs.values()))}")
-        linhas.append(f"Custo total:    Lícia {fmt_r(ct['Lícia'])}  |  Willian {fmt_r(ct['Willian'])}  |  Total {fmt_r(sum(ct.values()))}")
-
-    sem_min = sum(esc_sem[p]["min"]   for p in PESSOAS)
-    tot_min = sum(esc_tot[p]["min"]   for p in PESSOAS)
-    sem_cst = sum(esc_sem[p]["custo"] for p in PESSOAS)
-    tot_cst = sum(esc_tot[p]["custo"] for p in PESSOAS)
-
-    linhas += ["", sep, "CONSOLIDADO DO ESCRITÓRIO", sep]
-    linhas.append(f"Total semana:   Lícia {fmt_h(esc_sem['Lícia']['min'])}  |  Willian {fmt_h(esc_sem['Willian']['min'])}  |  Total {fmt_h(sem_min)}")
-    linhas.append(f"Custo semana:   Lícia {fmt_r(esc_sem['Lícia']['custo'])}  |  Willian {fmt_r(esc_sem['Willian']['custo'])}  |  Total {fmt_r(sem_cst)}")
-    linhas.append("")
-    linhas.append(f"Total geral:    Lícia {fmt_h(esc_tot['Lícia']['min'])}  |  Willian {fmt_h(esc_tot['Willian']['min'])}  |  Total {fmt_h(tot_min)}")
-    linhas.append(f"Custo geral:    Lícia {fmt_r(esc_tot['Lícia']['custo'])}  |  Willian {fmt_r(esc_tot['Willian']['custo'])}  |  Total {fmt_r(tot_cst)}")
-    linhas.append("")
     return "\n".join(linhas)
 
 
@@ -531,6 +578,11 @@ def main():
     print("Buscando registros de horas...")
     raw = buscar_todos_registros()
     print(f"{len(raw)} registros encontrados.")
+
+    # Debug custo — imprime no log do Actions para diagnóstico
+    print("\n--- DEBUG CUSTO (primeiros 5 registros com projeto) ---")
+    debug_custo(raw)
+    print("--- FIM DEBUG ---\n")
 
     print("Extraindo campos...")
     registros = [extrair(r) for r in raw]
