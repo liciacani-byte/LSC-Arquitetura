@@ -1,0 +1,33 @@
+name: Relatório Semanal — Sexta 18h
+
+on:
+  schedule:
+    - cron: '0 21 * * 5'   # sexta-feira 18h BRT (UTC-3)
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  relatorio-semanal:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependências
+        run: pip install requests
+
+      - name: Rodar relatório semanal
+        env:
+          NOTION_TOKEN:       ${{ secrets.NOTION_TOKEN }}
+          GMAIL_USER:         ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          EMAIL_DESTINO:      ${{ secrets.EMAIL_DESTINO }}
+        run: python relatorio_semanal.py
