@@ -5,8 +5,8 @@ Toda sexta às 18h (BRT).
 
 Seção 1 — Horas na Semana: por pessoa (Lícia / Willian), lista de projetos
            com tempo e custo desta semana.
-Seção 2 — Custo por Projeto: todos projetos ativos, tempo e custo acumulados
-           por Lícia e Willian.
+Seção 2 — Custo por Projeto: projetos ativos, detalhado por etapa com
+           custo real vs orçado e indicador de lucro/prejuízo.
 """
 
 import json
@@ -22,7 +22,8 @@ GMAIL_USER         = os.environ["GMAIL_USER"]
 GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
 EMAIL_DESTINO      = os.environ["EMAIL_DESTINO"]
 
-HORAS_DB_ID = "137fab6becce8004bbcde641510baffd"
+HORAS_DB_ID     = "137fab6becce8004bbcde641510baffd"
+PROPOSTAS_DB_ID = "2f6fab6becce805f9038da208103c068"
 
 HEADERS = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -36,6 +37,19 @@ MESES_ABREV = ["jan","fev","mar","abr","mai","jun",
 STATUS_INATIVO = {"finalizado","cancelado","arquivado","concluído","concluido","suspenso"}
 
 PESSOAS = ["Lícia", "Willian"]
+
+ETAPAS_BILLABLE = [
+    "I - Projeto Arquitetônico",
+    "II - Projeto Executivo",
+    "III - Projeto de Interiores",
+]
+ETAPA_SHORT = {
+    "I - Projeto Arquitetônico":  "I — Projeto Arquitetônico",
+    "II - Projeto Executivo":     "II — Projeto Executivo",
+    "III - Projeto de Interiores": "III — Projeto de Interiores",
+    "Gestão":    "Gestão",
+    "Simplific": "Simplific",
+}
 
 _proj_cache: dict = {}
 
@@ -90,6 +104,57 @@ def buscar_todos_registros():
     return rows
 
 
+def buscar_orcamentos():
+    """
+    Consulta '2026 | Propostas Comerciais' e retorna:
+      {project_id_sem_hifens: {etapa: valor_orcado}}
+    Usa a relação '2026 | Lista Projetos LSC' para casar com o project_id
+    usado em 'Controle de Horas'.
+    """
+    rows, payload = [], {"page_size": 100}
+    while True:
+        data = api_post(f"databases/{PROPOSTAS_DB_ID}/query", payload)
+        rows.extend(data.get("results", []))
+        if not data.get("has_more"):
+            break
+        payload["start_cursor"] = data["next_cursor"]
+
+    result = {}
+    for row in rows:
+        props = row.get("properties", {})
+        rel = props.get("2026 | Lista Projetos LSC", {})
+        if rel.get("type") != "relation":
+            continue
+        rels = rel.get("relation", [])
+        if not rels:
+            continue
+        pid = rels[0].get("id", "").replace("-", "")
+        if not pid:
+            continue
+
+        def _num(campo):
+            v = props.get(campo, {})
+            if v.get("type") == "number":
+                n = v.get("number")
+                return float(n) if n is not None else 0.0
+            return 0.0
+
+        entry = {
+            "I - Projeto Arquitetônico":  _num("I - Projeto Arquitetônico"),
+            "II - Projeto Executivo":     _num("II - Projeto Executivo"),
+            "III - Projeto de Interiores": _num("III - Projeto de Interiores"),
+        }
+        # Mantém a proposta aprovada; se houver múltiplas, acumula
+        if pid in result:
+            for k in entry:
+                result[pid][k] = max(result[pid][k], entry[k])
+        else:
+            result[pid] = entry
+
+    print(f"Orçamentos carregados: {len(result)} projetos.")
+    return result
+
+
 def info_projeto(pid):
     if not pid:
         return None, None
@@ -128,10 +193,8 @@ def _ler_formula(v):
         n = f.get("number")
         return float(n) if n is not None else 0.0
     if f.get("type") == "string":
-        # "R$ 1.234,56" → remove símbolo e espaços → "1.234,56"
-        # ponto = milhar, vírgula = decimal (formato BR)
         s = (f.get("string") or "").replace("R$", "").replace(" ", "")
-        s = s.replace(".", "").replace(",", ".")   # "1234.56"
+        s = s.replace(".", "").replace(",", ".")
         try:
             return float(s)
         except ValueError:
@@ -161,7 +224,7 @@ def debug_custo(raw_registros):
             break
         count += 1
         print(f"\n=== DEBUG CUSTO — registro {count} ===")
-        for campo in ["Minutos", "Custo", "V.H Escritório", "V.H. Equipe"]:
+        for campo in ["Minutos", "Custo", "V.H Escritório", "V.H. Equipe", "Etapa"]:
             raw = props.get(campo, "NÃO ENCONTRADO")
             print(f"  {campo}: {json.dumps(raw, ensure_ascii=False, default=str)[:300]}")
 
@@ -171,7 +234,6 @@ def extrair(r):
 
     minutos = max(0.0, _ler_formula(props.get("Minutos", {})))
 
-    # Custo: tenta fórmula; se zero, tenta calcular via rollups V.H.
     custo = max(0.0, _ler_formula(props.get("Custo", {})))
     if custo == 0.0 and minutos > 0:
         vh = (_ler_rollup_number(props.get("V.H Escritório", {}))
@@ -212,6 +274,12 @@ def extrair(r):
                     return item["status"].get("name", "")
         return None
 
+    def etapa():
+        v = props.get("Etapa", {})
+        if v.get("type") == "select" and v.get("select"):
+            return v["select"].get("name", "")
+        return None
+
     return {
         "inicio":         data_inicio(),
         "criado_por":     criado_por(),
@@ -219,6 +287,7 @@ def extrair(r):
         "minutos":        minutos,
         "custo":          custo,
         "status_projeto": status_projeto(),
+        "etapa":          etapa(),
     }
 
 
@@ -267,18 +336,21 @@ def agregar(registros, seg, sex):
             continue
 
         pessoa = pessoa_key(reg["criado_por"])
+        etapa  = reg.get("etapa") or "Sem etapa"
 
         if pid not in bruto:
-            bruto[pid] = {"semana": {}, "total": {}}
+            bruto[pid] = {"semana": {}, "etapas": {}}
         p = bruto[pid]
 
-        # acumulado total
-        if pessoa not in p["total"]:
-            p["total"][pessoa] = _z()
-        p["total"][pessoa]["min"]   += reg["minutos"]
-        p["total"][pessoa]["custo"] += reg["custo"]
+        # Acumulado por etapa (Seção 2)
+        if etapa not in p["etapas"]:
+            p["etapas"][etapa] = {}
+        if pessoa not in p["etapas"][etapa]:
+            p["etapas"][etapa][pessoa] = _z()
+        p["etapas"][etapa][pessoa]["min"]   += reg["minutos"]
+        p["etapas"][etapa][pessoa]["custo"] += reg["custo"]
 
-        # semana corrente
+        # Semana corrente (Seção 1)
         ini = reg["inicio"]
         if ini and seg <= ini <= sex:
             if pessoa not in p["semana"]:
@@ -298,6 +370,16 @@ def agregar(registros, seg, sex):
     return projetos
 
 
+def totais_projeto(proj):
+    """Retorna (total_min, total_custo) somando todas as etapas e pessoas."""
+    t_min = t_cst = 0.0
+    for ep in proj["etapas"].values():
+        for d in ep.values():
+            t_min += d["min"]
+            t_cst += d["custo"]
+    return t_min, t_cst
+
+
 # ── HTML helpers ─────────────────────────────────────────────────────────────────
 
 _TD = "padding:10px 12px;font-size:13px;vertical-align:middle;border-bottom:1px solid #f8f8f8;"
@@ -309,12 +391,13 @@ def th(txt, align="right"):
     return f'<th style="{_TH.format(align=align)}">{txt}</th>'
 
 
-def td(txt, bold=False, align="left", cor=None, bg=None):
+def td(txt, bold=False, align="left", cor=None, bg=None, colspan=None):
     st = _TD + f"text-align:{align};"
     if bold: st += "font-weight:600;"
     if cor:  st += f"color:{cor};"
     if bg:   st += f"background:{bg};"
-    return f'<td style="{st}">{txt}</td>'
+    cs = f' colspan="{colspan}"' if colspan else ""
+    return f'<td{cs} style="{st}">{txt}</td>'
 
 
 def table_wrap(thead, tbody):
@@ -342,9 +425,16 @@ def sub_title(txt, n=None):
     return f'<p style="margin:0 0 10px;font-size:12px;font-weight:600;color:#555;">{txt}{cnt}</p>'
 
 
-def proj_label(nome):
+def proj_label(nome, status=None):
+    badge = ""
+    if status:
+        badge = (
+            f'<span style="margin-left:8px;font-size:10px;font-weight:500;color:#888;'
+            f'background:#f0f0f0;padding:2px 8px;border-radius:99px;">{status}</span>'
+        )
     return (
-        f'<p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#1a1a1a;">{nome}</p>'
+        f'<p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#1a1a1a;">'
+        f'{nome}{badge}</p>'
     )
 
 
@@ -361,9 +451,20 @@ def card(label, valor, cor_label, cor_valor, bg):
     )
 
 
+def resultado_html(custo, orcado):
+    """Retorna célula HTML com indicador de lucro/prejuízo."""
+    if orcado <= 0:
+        return td("—", align="right", cor="#ccc")
+    saldo = orcado - custo
+    if saldo >= 0:
+        return td(f"▲ {fmt_r(saldo)}", align="right", cor="#276749")
+    else:
+        return td(f"▼ {fmt_r(abs(saldo))}", align="right", cor="#c53030")
+
+
 # ── Geração do HTML ──────────────────────────────────────────────────────────────
 
-def gerar_html(projetos, seg, sex):
+def gerar_html(projetos, seg, sex, orcamentos):
     data_ini = f"{seg.day:02d}"
     data_fim = f"{sex.day:02d}/{MESES_ABREV[sex.month - 1]}/{sex.year}"
     periodo  = f"{data_ini} a {data_fim}"
@@ -374,7 +475,8 @@ def gerar_html(projetos, seg, sex):
         for p in PESSOAS:
             sem_min += proj["semana"].get(p, _z())["min"]
             sem_cst += proj["semana"].get(p, _z())["custo"]
-            tot_min += proj["total"].get(p,  _z())["min"]
+        t_m, t_c = totais_projeto(proj)
+        tot_min += t_m
 
     n_total  = len(projetos)
     n_semana = sum(
@@ -439,47 +541,109 @@ def gerar_html(projetos, seg, sex):
     )
 
     # ── Seção 2: Custo por Projeto ─────────────────────────────────────────────
+    # Cabeçalho: Responsável | Tempo | Custo | Orçado | Resultado
     thead_proj = (
-        th("", align="left")
-        + th("Tempo total")
-        + th("Custo total")
+        th("Responsável", align="left")
+        + th("Tempo")
+        + th("Custo")
+        + th("Orçado")
+        + th("Resultado")
     )
 
     proj_s2 = {
         pid: p for pid, p in projetos.items()
         if eh_ativo_secao2(p.get("status_projeto"))
     }
-    # fallback: se nenhum passa no filtro, mostra todos ativos
     if not proj_s2:
         proj_s2 = projetos
 
     proj_s2_ordenados = sorted(proj_s2.items(), key=lambda x: x[1]["nome"])
 
     projetos_html = ""
-    for _, proj in proj_s2_ordenados:
+    for pid, proj in proj_s2_ordenados:
+        orc = orcamentos.get(pid.replace("-", ""), {})
         tbody = ""
-        t_min = t_cst = 0.0
-        for pessoa in PESSOAS:
-            d = proj["total"].get(pessoa, _z())
-            t_min += d["min"]
-            t_cst += d["custo"]
+
+        # Coleta etapas com horas, ordena: billable primeiro, depois outras
+        etapas_com_horas = set(proj["etapas"].keys())
+        etapas_billable_presentes = [e for e in ETAPAS_BILLABLE if e in etapas_com_horas]
+        etapas_outras = sorted(e for e in etapas_com_horas if e not in ETAPAS_BILLABLE)
+
+        # Também adiciona etapas billable sem horas mas com orçado
+        for e in ETAPAS_BILLABLE:
+            if e not in etapas_com_horas and orc.get(e, 0) > 0:
+                etapas_billable_presentes.append(e)
+
+        etapas_para_mostrar = etapas_billable_presentes + etapas_outras
+
+        proj_t_min = proj_t_cst = proj_t_orc = 0.0
+
+        for etapa in etapas_para_mostrar:
+            etapa_label = ETAPA_SHORT.get(etapa, etapa)
+            etapa_orc   = orc.get(etapa, 0.0) if etapa in ETAPAS_BILLABLE else 0.0
+            ep_dados    = proj["etapas"].get(etapa, {})
+
+            # Linha de grupo: nome da etapa
             tbody += (
-                "<tr>"
-                + td(pessoa)
-                + td(fmt_h(d["min"]), align="right", cor="#1a1a1a")
-                + td(fmt_r(d["custo"]), align="right", cor="#276749")
-                + "</tr>"
+                f'<tr><td colspan="5" style="padding:8px 12px 4px;font-size:10px;'
+                f'font-weight:700;text-transform:uppercase;letter-spacing:.5px;'
+                f'color:#888;background:#fafafa;border-bottom:1px solid #f0f0f0;">'
+                f'{etapa_label}</td></tr>'
             )
+
+            ep_t_min = ep_t_cst = 0.0
+            for pessoa in PESSOAS:
+                d = ep_dados.get(pessoa, _z())
+                ep_t_min += d["min"]
+                ep_t_cst += d["custo"]
+                tbody += (
+                    "<tr>"
+                    + td(pessoa, cor="#555")
+                    + td(fmt_h(d["min"]), align="right")
+                    + td(fmt_r(d["custo"]) if d["custo"] > 0 else "—", align="right", cor="#555")
+                    + td("", align="right")  # orçado só no total da etapa
+                    + td("", align="right")  # resultado só no total da etapa
+                    + "</tr>"
+                )
+
+            # Total da etapa
+            proj_t_min += ep_t_min
+            proj_t_cst += ep_t_cst
+            if etapa in ETAPAS_BILLABLE:
+                proj_t_orc += etapa_orc
+            tbody += "<tr>"
+            tbody += td("Total etapa", bold=True, bg="#f5f5f5")
+            tbody += td(fmt_h(ep_t_min), bold=True, align="right", bg="#f5f5f5")
+            tbody += td(fmt_r(ep_t_cst), bold=True, align="right", cor="#276749", bg="#f5f5f5")
+            tbody += td(fmt_r(etapa_orc) if etapa_orc > 0 else "—", bold=True, align="right", bg="#f5f5f5", cor="#1a1a1a")
+            if etapa_orc <= 0:
+                tbody += f'<td style="{_TD}text-align:right;background:#f5f5f5;color:#ccc;">—</td>'
+            else:
+                saldo = etapa_orc - ep_t_cst
+                cor_r = "#276749" if saldo >= 0 else "#c53030"
+                sinal = "▲" if saldo >= 0 else "▼"
+                tbody += f'<td style="{_TD}text-align:right;background:#f5f5f5;color:{cor_r};font-weight:600;">{sinal} {fmt_r(abs(saldo))}</td>'
+            tbody += "</tr>"
+
+        # Total do projeto
+        tot_saldo = proj_t_orc - proj_t_cst
+        cor_tot   = "#276749" if tot_saldo >= 0 else "#c53030"
+        sinal_tot = "▲" if tot_saldo >= 0 else "▼"
         tbody += (
             "<tr>"
-            + td("Total", bold=True, bg="#fafafa")
-            + td(fmt_h(t_min), bold=True, align="right", bg="#fafafa")
-            + td(fmt_r(t_cst), bold=True, align="right", cor="#276749", bg="#fafafa")
+            + td("TOTAL PROJETO", bold=True, bg="#1a1a1a", cor="#fff")
+            + td(fmt_h(proj_t_min), bold=True, align="right", bg="#1a1a1a", cor="#fff")
+            + td(fmt_r(proj_t_cst), bold=True, align="right", bg="#1a1a1a", cor="#fff")
+            + td(fmt_r(proj_t_orc) if proj_t_orc > 0 else "—", bold=True, align="right", bg="#1a1a1a", cor="#aaa")
+            + f'<td style="{_TD}text-align:right;background:#1a1a1a;color:{cor_tot};font-weight:700;">'
+            + (f'{sinal_tot} {fmt_r(abs(tot_saldo))}' if proj_t_orc > 0 else "—")
+            + '</td>'
             + "</tr>"
         )
+
         projetos_html += (
-            '<div style="margin-bottom:20px;">'
-            + proj_label(proj["nome"])
+            '<div style="margin-bottom:24px;">'
+            + proj_label(proj["nome"], proj.get("status_projeto"))
             + table_wrap(thead_proj, tbody)
             + '</div>'
         )
@@ -517,8 +681,8 @@ def gerar_html(projetos, seg, sex):
 
 # ── Texto plano (fallback) ───────────────────────────────────────────────────────
 
-def gerar_texto(projetos, seg, sex):
-    sep    = "━" * 38
+def gerar_texto(projetos, seg, sex, orcamentos):
+    sep    = "━" * 52
     linhas = [f"RELATÓRIO SEMANAL — {seg.day:02d} a {sex.day:02d}/{MESES_ABREV[sex.month-1]}/{sex.year}"]
 
     linhas += ["", sep, "SEÇÃO 1 — HORAS NA SEMANA", sep]
@@ -543,14 +707,36 @@ def gerar_texto(projetos, seg, sex):
     proj_s2 = {pid: p for pid, p in projetos.items() if eh_ativo_secao2(p.get("status_projeto"))}
     if not proj_s2:
         proj_s2 = projetos
-    for proj in sorted(proj_s2.values(), key=lambda x: x["nome"]):
-        linhas += ["", f"  {proj['nome']}"]
-        t_min = t_cst = 0.0
-        for pessoa in PESSOAS:
-            d = proj["total"].get(pessoa, _z())
-            t_min += d["min"]; t_cst += d["custo"]
-            linhas.append(f"    {pessoa:<10}  {fmt_h(d['min']):>10}  {fmt_r(d['custo']):>12}")
-        linhas.append(f"    {'Total':<10}  {fmt_h(t_min):>10}  {fmt_r(t_cst):>12}")
+
+    for pid, proj in sorted(proj_s2.items(), key=lambda x: x[1]["nome"]):
+        orc = orcamentos.get(pid.replace("-", ""), {})
+        linhas += ["", f"  {proj['nome']}  ({proj.get('status_projeto','')})"]
+        linhas.append(f"  {'':30}  {'Tempo':>10}  {'Custo':>12}  {'Orçado':>12}  {'Resultado':>12}")
+
+        proj_t_min = proj_t_cst = proj_t_orc = 0.0
+        for etapa in ETAPAS_BILLABLE:
+            ep = proj["etapas"].get(etapa, {})
+            etapa_orc = orc.get(etapa, 0.0)
+            ep_t_min = ep_t_cst = 0.0
+            linhas.append(f"    {etapa}")
+            for pessoa in PESSOAS:
+                d = ep.get(pessoa, _z())
+                ep_t_min += d["min"]; ep_t_cst += d["custo"]
+                linhas.append(f"      {pessoa:<10}  {fmt_h(d['min']):>10}  {fmt_r(d['custo']):>12}")
+            saldo = etapa_orc - ep_t_cst if etapa_orc > 0 else None
+            res_str = (("▲ " if saldo >= 0 else "▼ ") + fmt_r(abs(saldo))) if saldo is not None else "—"
+            linhas.append(
+                f"      {'Total':10}  {fmt_h(ep_t_min):>10}  {fmt_r(ep_t_cst):>12}"
+                f"  {fmt_r(etapa_orc) if etapa_orc > 0 else '—':>12}  {res_str:>14}"
+            )
+            proj_t_min += ep_t_min; proj_t_cst += ep_t_cst; proj_t_orc += etapa_orc
+
+        tot_saldo = proj_t_orc - proj_t_cst if proj_t_orc > 0 else None
+        res_proj  = (("▲ " if tot_saldo >= 0 else "▼ ") + fmt_r(abs(tot_saldo))) if tot_saldo is not None else "—"
+        linhas.append(
+            f"  {'TOTAL':30}  {fmt_h(proj_t_min):>10}  {fmt_r(proj_t_cst):>12}"
+            f"  {fmt_r(proj_t_orc) if proj_t_orc > 0 else '—':>12}  {res_proj:>14}"
+        )
 
     return "\n".join(linhas)
 
@@ -579,7 +765,9 @@ def main():
     raw = buscar_todos_registros()
     print(f"{len(raw)} registros encontrados.")
 
-    # Debug custo — imprime no log do Actions para diagnóstico
+    print("Buscando orçamentos...")
+    orcamentos = buscar_orcamentos()
+
     print("\n--- DEBUG CUSTO (primeiros 5 registros com projeto) ---")
     debug_custo(raw)
     print("--- FIM DEBUG ---\n")
@@ -587,7 +775,7 @@ def main():
     print("Extraindo campos...")
     registros = [extrair(r) for r in raw]
 
-    print("Agregando por projeto/pessoa...")
+    print("Agregando por projeto/pessoa/etapa...")
     projetos = agregar(registros, seg, sex)
     print(f"{len(projetos)} projetos com registros.")
 
@@ -595,8 +783,8 @@ def main():
     data_fim = f"{sex.day:02d}/{MESES_ABREV[sex.month - 1]}/{sex.year}"
     assunto  = f"Relatório Semanal | {data_ini} a {data_fim}"
 
-    html  = gerar_html(projetos, seg, sex)
-    texto = gerar_texto(projetos, seg, sex)
+    html  = gerar_html(projetos, seg, sex, orcamentos)
+    texto = gerar_texto(projetos, seg, sex, orcamentos)
     print(texto)
 
     print("Enviando e-mail...")
