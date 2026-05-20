@@ -564,15 +564,14 @@ def gerar_html(projetos, seg, sex, orcamentos):
         orc = orcamentos.get(pid.replace("-", ""), {})
         tbody = ""
 
-        # Coleta etapas com horas, ordena: billable primeiro, depois outras
+        # I, II, III sempre na ordem fixa; exibe só se tiver horas OU orçado
         etapas_com_horas = set(proj["etapas"].keys())
-        etapas_billable_presentes = [e for e in ETAPAS_BILLABLE if e in etapas_com_horas]
+        etapas_billable_presentes = [
+            e for e in ETAPAS_BILLABLE
+            if e in etapas_com_horas or orc.get(e, 0) > 0
+        ]
+        # Outras etapas (Gestão, Simplific…) só aparecem se tiverem horas
         etapas_outras = sorted(e for e in etapas_com_horas if e not in ETAPAS_BILLABLE)
-
-        # Também adiciona etapas billable sem horas mas com orçado
-        for e in ETAPAS_BILLABLE:
-            if e not in etapas_com_horas and orc.get(e, 0) > 0:
-                etapas_billable_presentes.append(e)
 
         etapas_para_mostrar = etapas_billable_presentes + etapas_outras
 
