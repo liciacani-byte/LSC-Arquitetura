@@ -573,7 +573,7 @@ def gerar_html(rel):
             atraso_str = str(t["dias_atraso"]) + "d"
             resp_nome = t["responsavel"]["nome"] or "—"
             linhas.append(
-                f'<tr>{celula_tarefa(t)}{td(badge(t["status"]))}'  
+                f'<tr>{celula_tarefa(t)}{td(badge(t["status"]))}'
                 f'{td(resp_nome, nowrap=True)}'
                 f'{td(atraso_str, cor="#e53e3e", negrito=True)}</tr>'
             )
@@ -586,7 +586,7 @@ def gerar_html(rel):
         for t in rel["vencem3"]:
             resp_nome = t["responsavel"]["nome"] or "—"
             linhas.append(
-                f'<tr>{celula_tarefa(t)}{td(badge(t["status"]))}'  
+                f'<tr>{celula_tarefa(t)}{td(badge(t["status"]))}'
                 f'{td(resp_nome)}'
                 f'{td(fmt_d(t["d_limite_calc"]), cor="#c05621")}</tr>'
             )
@@ -679,7 +679,7 @@ def gerar_html(rel):
             prazo_str = fmt_d(t["d_limite_calc"]) if t["d_limite_calc"] else "—"
             linhas.append(
                 f'<tr>{celula_tarefa(t, mostrar_flow=(t["status"] == "Revisão"))}'
-                f'{td(badge(t["status"]))}'  
+                f'{td(badge(t["status"]))}'
                 f'{td(t["etapa"] or "—")}'
                 f'{td(prazo_str)}'
                 f'{td(sem_mov_str, cor="#888")}</tr>'
@@ -894,7 +894,7 @@ def gerar_html(rel):
 # ── Envio de e-mail ─────────────────────────────────────────────────────────────
 
 def enviar(html, hoje):
-    assunto = f"Relatório Operacional | {hoje.strftime('%d/%m')} — escritório"
+    assunto = f"Relatório Diário de Produção | {hoje.strftime('%d/%m')}"
     msg = MIMEMultipart("alternative")
     msg["Subject"] = assunto
     msg["From"]    = GMAIL_USER
