@@ -766,7 +766,11 @@ def main():
     print(f"{len(raw)} registros encontrados.")
 
     print("Buscando orçamentos...")
-    orcamentos = buscar_orcamentos()
+    try:
+        orcamentos = buscar_orcamentos()
+    except Exception as e:
+        print(f"⚠ Orçamentos indisponíveis ({e}). Verifique a conexão da integração com '2026 | Propostas Comerciais'.")
+        orcamentos = {}
 
     print("\n--- DEBUG CUSTO (primeiros 5 registros com projeto) ---")
     debug_custo(raw)
