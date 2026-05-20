@@ -784,7 +784,7 @@ def main():
 
     data_ini = f"{seg.day:02d}"
     data_fim = f"{sex.day:02d}/{MESES_ABREV[sex.month - 1]}/{sex.year}"
-    assunto  = f"Relatório Semanal | {data_ini} a {data_fim}"
+    assunto  = f"Relatório Semanal de Produtividade e Custos | {data_ini} a {data_fim}"
 
     html  = gerar_html(projetos, seg, sex, orcamentos)
     texto = gerar_texto(projetos, seg, sex, orcamentos)
