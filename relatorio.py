@@ -7,6 +7,7 @@ Busca todas as tarefas ativas do Notion e envia relatório por e-mail.
 import os
 import smtplib
 import requests
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -461,8 +462,6 @@ def rev_flow_html(passos):
 
 
 def celula_tarefa(t, mostrar_flow=False):
-    proj = (f'<span style="font-size:11px;color:#999;display:block;margin-bottom:2px;">'
-            f'{t["projeto_nome"] or ""}</span>') if t["projeto_nome"] else ""
     link = (f'<a href="{t["url"]}" style="color:#1a1a1a;text-decoration:none;'
             f'font-size:13px;font-weight:500;">{t["nome"]}</a>')
     etapa = (f'<span style="font-size:11px;color:#bbb;margin-left:4px;">'
@@ -470,7 +469,7 @@ def celula_tarefa(t, mostrar_flow=False):
     obs = (f'<div style="font-size:11px;color:#aaa;font-style:italic;margin-top:3px;">'
            f'{t["observacao"]}</div>') if t["observacao"] else ""
     flow = rev_flow_html(t["revisao_info"]["passos"]) if mostrar_flow and t.get("revisao_info") else ""
-    return f'<td style="padding:10px;border-bottom:1px solid #f8f8f8;vertical-align:top;">{proj}{link}{etapa}{obs}{flow}</td>'
+    return f'<td style="padding:10px;border-bottom:1px solid #f8f8f8;vertical-align:top;">{link}{etapa}{obs}{flow}</td>'
 
 
 def td(conteudo, cor=None, negrito=False, nowrap=True):
@@ -482,6 +481,26 @@ def td(conteudo, cor=None, negrito=False, nowrap=True):
     if nowrap:
         styles += "white-space:nowrap;"
     return f'<td style="{styles}">{conteudo}</td>'
+
+
+def header_projeto(nome, ncols):
+    return (
+        f'<tr style="background:#f4f4f4;">'
+        f'<td colspan="{ncols}" style="padding:7px 10px;font-size:11px;font-weight:700;'
+        f'color:#444;border-bottom:1px solid #e8e8e8;letter-spacing:.2px;">'
+        f'📁 {nome}</td></tr>'
+    )
+
+
+def agrupar_por_projeto(lista):
+    """Agrupa lista de tarefas por projeto preservando a ordem de primeira ocorrência."""
+    grupos = OrderedDict()
+    for t in lista:
+        proj = t.get("projeto_nome") or "Sem projeto"
+        if proj not in grupos:
+            grupos[proj] = []
+        grupos[proj].append(t)
+    return list(grupos.items())
 
 
 def tabela_wrap(linhas_html, colunas):
@@ -567,30 +586,35 @@ def gerar_html(rel):
     )
 
     # ── Seção 1 — Atenção imediata ───────────────────────────────────────────────
+    ncols_s1 = 4
     if rel["atrasadas"]:
         linhas = []
-        for t in rel["atrasadas"]:
-            atraso_str = str(t["dias_atraso"]) + "d"
-            resp_nome = t["responsavel"]["nome"] or "—"
-            linhas.append(
-                f'<tr>{celula_tarefa(t)}{td(badge(t["status"]))}'
-                f'{td(resp_nome, nowrap=True)}'
-                f'{td(atraso_str, cor="#e53e3e", negrito=True)}</tr>'
-            )
-        s1_atrasadas = tabela_wrap(linhas, ["Projeto / Tarefa", "Status", "Responsável", "Atraso"])
+        for proj, grupo in agrupar_por_projeto(rel["atrasadas"]):
+            linhas.append(header_projeto(proj, ncols_s1))
+            for t in grupo:
+                atraso_str = str(t["dias_atraso"]) + "d"
+                resp_nome = t["responsavel"]["nome"] or "—"
+                linhas.append(
+                    f'<tr>{celula_tarefa(t)}{td(badge(t["status"]))}'
+                    f'{td(resp_nome, nowrap=True)}'
+                    f'{td(atraso_str, cor="#e53e3e", negrito=True)}</tr>'
+                )
+        s1_atrasadas = tabela_wrap(linhas, ["Tarefa", "Status", "Responsável", "Atraso"])
     else:
         s1_atrasadas = vazio("Nenhuma tarefa atrasada. Preencha D. Início + Dias úteis para ativar esta seção.")
 
     if rel["vencem3"]:
         linhas = []
-        for t in rel["vencem3"]:
-            resp_nome = t["responsavel"]["nome"] or "—"
-            linhas.append(
-                f'<tr>{celula_tarefa(t)}{td(badge(t["status"]))}'
-                f'{td(resp_nome)}'
-                f'{td(fmt_d(t["d_limite_calc"]), cor="#c05621")}</tr>'
-            )
-        s1_vence3 = tabela_wrap(linhas, ["Projeto / Tarefa", "Status", "Responsável", "Limite"])
+        for proj, grupo in agrupar_por_projeto(rel["vencem3"]):
+            linhas.append(header_projeto(proj, ncols_s1))
+            for t in grupo:
+                resp_nome = t["responsavel"]["nome"] or "—"
+                linhas.append(
+                    f'<tr>{celula_tarefa(t)}{td(badge(t["status"]))}'
+                    f'{td(resp_nome)}'
+                    f'{td(fmt_d(t["d_limite_calc"]), cor="#c05621")}</tr>'
+                )
+        s1_vence3 = tabela_wrap(linhas, ["Tarefa", "Status", "Responsável", "Limite"])
     else:
         s1_vence3 = vazio("Nenhuma tarefa vence nos próximos 3 dias.")
 
@@ -631,33 +655,35 @@ def gerar_html(rel):
 
     # ── Seção 2 — Revisões ───────────────────────────────────────────────────────
     paradas_ids = {t["id"] for t in rel["rev_paradas"]}
-    # paradas primeiro (mais tempo sem atividade no topo), depois o restante
     revisoes_ordenadas = (
         sorted(rel["rev_paradas"], key=lambda x: -(x.get("dias_parado") or 0))
         + [t for t in rel["revisoes"] if t["id"] not in paradas_ids]
     )
 
+    ncols_s2 = 4
     if revisoes_ordenadas:
         linhas = []
-        for t in revisoes_ordenadas:
-            ri = t["revisao_info"]
-            aguarda = "Lícia" if ri["aguarda_licia"] else "Willian"
-            eh_parada = t["id"] in paradas_ids
-            ultima = parse_d(t["ultima_edicao"])
-            dias_p = t.get("dias_parado") or ((hoje - ultima).days if ultima else None)
-            parado_str = (str(dias_p) + "d") if dias_p is not None else "—"
-            row_style = ' style="background:#fff5f5;"' if eh_parada else ""
-            cor_ag = "#c0392b" if eh_parada else "#555"
-            cor_p  = "#e53e3e" if eh_parada else "#aaa"
-            linhas.append(
-                f'<tr{row_style}>'
-                f'{celula_tarefa(t, mostrar_flow=True)}'
-                f'{td(t["etapa"] or "—")}'
-                f'{td(aguarda, cor=cor_ag, negrito=eh_parada)}'
-                f'{td(parado_str, cor=cor_p, negrito=eh_parada)}'
-                f'</tr>'
-            )
-        s2_tabela = tabela_wrap(linhas, ["Projeto / Tarefa", "Etapa", "Aguardando", "Parado há"])
+        for proj, grupo in agrupar_por_projeto(revisoes_ordenadas):
+            linhas.append(header_projeto(proj, ncols_s2))
+            for t in grupo:
+                ri = t["revisao_info"]
+                aguarda = "Lícia" if ri["aguarda_licia"] else "Willian"
+                eh_parada = t["id"] in paradas_ids
+                ultima = parse_d(t["ultima_edicao"])
+                dias_p = t.get("dias_parado") or ((hoje - ultima).days if ultima else None)
+                parado_str = (str(dias_p) + "d") if dias_p is not None else "—"
+                row_style = ' style="background:#fff5f5;"' if eh_parada else ""
+                cor_ag = "#c0392b" if eh_parada else "#555"
+                cor_p  = "#e53e3e" if eh_parada else "#aaa"
+                linhas.append(
+                    f'<tr{row_style}>'
+                    f'{celula_tarefa(t, mostrar_flow=True)}'
+                    f'{td(t["etapa"] or "—")}'
+                    f'{td(aguarda, cor=cor_ag, negrito=eh_parada)}'
+                    f'{td(parado_str, cor=cor_p, negrito=eh_parada)}'
+                    f'</tr>'
+                )
+        s2_tabela = tabela_wrap(linhas, ["Tarefa", "Etapa", "Aguardando", "Parado há"])
     else:
         s2_tabela = vazio("Nenhuma tarefa em revisão no momento.")
 
@@ -670,37 +696,43 @@ def gerar_html(rel):
     )
 
     # ── Seção 3 — Dependem da Lícia ──────────────────────────────────────────────
+    ncols_s3a = 5
     if rel["licia"]:
         linhas = []
-        for t in rel["licia"]:
-            ultima = parse_d(t["ultima_edicao"])
-            dias_sem_mov = (hoje - ultima).days if ultima else None
-            sem_mov_str = (str(dias_sem_mov) + "d") if dias_sem_mov is not None else "—"
-            prazo_str = fmt_d(t["d_limite_calc"]) if t["d_limite_calc"] else "—"
-            linhas.append(
-                f'<tr>{celula_tarefa(t, mostrar_flow=(t["status"] == "Revisão"))}'
-                f'{td(badge(t["status"]))}'
-                f'{td(t["etapa"] or "—")}'
-                f'{td(prazo_str)}'
-                f'{td(sem_mov_str, cor="#888")}</tr>'
-            )
-        s3_licia = tabela_wrap(linhas, ["Projeto / Tarefa", "Status", "Etapa", "Prazo", "Sem mov."])
+        for proj, grupo in agrupar_por_projeto(rel["licia"]):
+            linhas.append(header_projeto(proj, ncols_s3a))
+            for t in grupo:
+                ultima = parse_d(t["ultima_edicao"])
+                dias_sem_mov = (hoje - ultima).days if ultima else None
+                sem_mov_str = (str(dias_sem_mov) + "d") if dias_sem_mov is not None else "—"
+                prazo_str = fmt_d(t["d_limite_calc"]) if t["d_limite_calc"] else "—"
+                linhas.append(
+                    f'<tr>{celula_tarefa(t, mostrar_flow=(t["status"] == "Revisão"))}'
+                    f'{td(badge(t["status"]))}'
+                    f'{td(t["etapa"] or "—")}'
+                    f'{td(prazo_str)}'
+                    f'{td(sem_mov_str, cor="#888")}</tr>'
+                )
+        s3_licia = tabela_wrap(linhas, ["Tarefa", "Status", "Etapa", "Prazo", "Sem mov."])
     else:
         s3_licia = vazio("Nenhuma tarefa ativa para Lícia.")
 
+    ncols_s3b = 3
     if aguarda_licia_externos:
         linhas = []
-        for t in aguarda_licia_externos:
-            ri = t["revisao_info"]
-            ultima = parse_d(t["ultima_edicao"])
-            dias_ag = (hoje - ultima).days if ultima else None
-            dias_ag_str = (str(dias_ag) + "d") if dias_ag is not None else "—"
-            linhas.append(
-                f'<tr>{celula_tarefa(t, mostrar_flow=True)}'
-                f'{td(ri["label"], nowrap=False)}'
-                f'{td(dias_ag_str, cor="#c0392b", negrito=True)}</tr>'
-            )
-        s3_aguarda = tabela_wrap(linhas, ["Projeto / Tarefa", "Tipo de pendência", "Aguardando há"])
+        for proj, grupo in agrupar_por_projeto(aguarda_licia_externos):
+            linhas.append(header_projeto(proj, ncols_s3b))
+            for t in grupo:
+                ri = t["revisao_info"]
+                ultima = parse_d(t["ultima_edicao"])
+                dias_ag = (hoje - ultima).days if ultima else None
+                dias_ag_str = (str(dias_ag) + "d") if dias_ag is not None else "—"
+                linhas.append(
+                    f'<tr>{celula_tarefa(t, mostrar_flow=True)}'
+                    f'{td(ri["label"], nowrap=False)}'
+                    f'{td(dias_ag_str, cor="#c0392b", negrito=True)}</tr>'
+                )
+        s3_aguarda = tabela_wrap(linhas, ["Tarefa", "Tipo de pendência", "Aguardando há"])
     else:
         s3_aguarda = vazio("Nenhuma tarefa de Willian aguardando ação de Lícia no momento.")
 
@@ -775,26 +807,29 @@ def gerar_html(rel):
     )
 
     # ── Seção 5 — Visão Willian ──────────────────────────────────────────────────
+    ncols_s5 = 5
     if rel["willian"]:
         linhas = []
-        for t in rel["willian"]:
-            ri = t.get("revisao_info")
-            flow_cell = celula_tarefa(t, mostrar_flow=(t["status"] == "Revisão"))
-            prazo_str = fmt_d(t["d_limite_calc"]) if t["d_limite_calc"] else "—"
-            if t["status"] == "Revisão" and ri and ri["aguarda_licia"]:
-                ultima = parse_d(t["ultima_edicao"])
-                dias_b = (hoje - ultima).days if ultima else "?"
-                bloqueio = f'<span style="color:#c0392b;font-size:12px;">Aguarda Lícia · {dias_b}d</span>'
-            else:
-                bloqueio = "—"
-            linhas.append(
-                f'<tr>{flow_cell}'
-                f'{td(badge(t["status"]))}'
-                f'{td(t["etapa"] or "—")}'
-                f'{td(prazo_str)}'
-                f'{td(bloqueio, nowrap=False)}</tr>'
-            )
-        s5_willian = tabela_wrap(linhas, ["Projeto / Tarefa", "Status", "Etapa", "Prazo", "Bloqueio"])
+        for proj, grupo in agrupar_por_projeto(rel["willian"]):
+            linhas.append(header_projeto(proj, ncols_s5))
+            for t in grupo:
+                ri = t.get("revisao_info")
+                flow_cell = celula_tarefa(t, mostrar_flow=(t["status"] == "Revisão"))
+                prazo_str = fmt_d(t["d_limite_calc"]) if t["d_limite_calc"] else "—"
+                if t["status"] == "Revisão" and ri and ri["aguarda_licia"]:
+                    ultima = parse_d(t["ultima_edicao"])
+                    dias_b = (hoje - ultima).days if ultima else "?"
+                    bloqueio = f'<span style="color:#c0392b;font-size:12px;">Aguarda Lícia · {dias_b}d</span>'
+                else:
+                    bloqueio = "—"
+                linhas.append(
+                    f'<tr>{flow_cell}'
+                    f'{td(badge(t["status"]))}'
+                    f'{td(t["etapa"] or "—")}'
+                    f'{td(prazo_str)}'
+                    f'{td(bloqueio, nowrap=False)}</tr>'
+                )
+        s5_willian = tabela_wrap(linhas, ["Tarefa", "Status", "Etapa", "Prazo", "Bloqueio"])
     else:
         s5_willian = vazio("Nenhuma tarefa ativa para Willian.")
 
