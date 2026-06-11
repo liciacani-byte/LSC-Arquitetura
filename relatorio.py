@@ -696,18 +696,18 @@ def gerar_html(rel):
     )
 
     # ── Seção 3 — Dependem da Lícia ──────────────────────────────────────────────
-    ncols_s3a = 5
+    ncols_s3 = 5
     if rel["licia"]:
         linhas = []
         for proj, grupo in agrupar_por_projeto(rel["licia"]):
-            linhas.append(header_projeto(proj, ncols_s3a))
+            linhas.append(header_projeto(proj, ncols_s3))
             for t in grupo:
                 ultima = parse_d(t["ultima_edicao"])
                 dias_sem_mov = (hoje - ultima).days if ultima else None
                 sem_mov_str = (str(dias_sem_mov) + "d") if dias_sem_mov is not None else "—"
                 prazo_str = fmt_d(t["d_limite_calc"]) if t["d_limite_calc"] else "—"
                 linhas.append(
-                    f'<tr>{celula_tarefa(t, mostrar_flow=(t["status"] == "Revisão"))}'
+                    f'<tr>{celula_tarefa(t)}'
                     f'{td(badge(t["status"]))}'
                     f'{td(t["etapa"] or "—")}'
                     f'{td(prazo_str)}'
@@ -717,34 +717,11 @@ def gerar_html(rel):
     else:
         s3_licia = vazio("Nenhuma tarefa ativa para Lícia.")
 
-    ncols_s3b = 3
-    if aguarda_licia_externos:
-        linhas = []
-        for proj, grupo in agrupar_por_projeto(aguarda_licia_externos):
-            linhas.append(header_projeto(proj, ncols_s3b))
-            for t in grupo:
-                ri = t["revisao_info"]
-                ultima = parse_d(t["ultima_edicao"])
-                dias_ag = (hoje - ultima).days if ultima else None
-                dias_ag_str = (str(dias_ag) + "d") if dias_ag is not None else "—"
-                linhas.append(
-                    f'<tr>{celula_tarefa(t, mostrar_flow=True)}'
-                    f'{td(ri["label"], nowrap=False)}'
-                    f'{td(dias_ag_str, cor="#c0392b", negrito=True)}</tr>'
-                )
-        s3_aguarda = tabela_wrap(linhas, ["Tarefa", "Tipo de pendência", "Aguardando há"])
-    else:
-        s3_aguarda = vazio("Nenhuma tarefa de Willian aguardando ação de Lícia no momento.")
-
     s3 = (
         '<div style="margin-bottom:26px;">'
         + secao_titulo("Seção 3 — Dependem da Lícia")
-        + '<div style="margin-bottom:14px;">'
-        + sub_titulo("Tarefas ativas — responsável: Lícia", len(rel["licia"])) + s3_licia
-        + '</div>'
-        + '<div style="margin-bottom:14px;">'
-        + sub_titulo("Tarefas de Willian aguardando ação de Lícia", len(aguarda_licia_externos)) + s3_aguarda
-        + '</div>'
+        + sub_titulo("Tarefas ativas — responsável: Lícia", len(rel["licia"]))
+        + s3_licia
         + '</div>'
     )
 
