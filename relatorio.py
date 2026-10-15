@@ -763,36 +763,36 @@ def gerar_html(rel):
 
     # ── Seção 2 — Gargalos e Pendências ──────────────────────────────────────────
 
-    NCOLS_G = 5
-
-    def tabela_revisao(lista, cor_acao, nome_acao):
+    def resumo_por_projeto(grupos_tipo):
+        """grupos_tipo: lista de (label, badge_html, lista_tarefas)"""
         linhas = []
-        for proj, grupo in agrupar_por_projeto(lista):
-            linhas.append(header_projeto(proj, NCOLS_G))
-            for t in grupo:
-                ri = t["revisao_info"]
-                ultima = parse_d(t["ultima_edicao"])
-                dias_esp = (hoje - ultima).days if ultima else None
-                esp_str = (str(dias_esp) + "d") if dias_esp is not None else "—"
-                prazo_str = fmt_d(t["d_limite_calc"]) if t["d_limite_calc"] else "—"
-                flow_html = rev_flow_html(ri["passos"]) if ri.get("passos") else ""
-                pendencia_html = (
-                    f'<span style="font-size:11px;color:{cor_acao};">{ri["label"]}</span>'
-                    + flow_html
+        for label, badge_html, tarefas in grupos_tipo:
+            for proj, grupo in agrupar_por_projeto(tarefas):
+                prazos = [t["d_limite_calc"] for t in grupo if t["d_limite_calc"]]
+                prazo_min = min(prazos) if prazos else None
+                cor_prazo = "#e53e3e" if any((t.get("dias_atraso") or 0) > 0 for t in grupo) else "#555"
+                url = grupo[0]["url"]
+                nome_link = (
+                    f'<a href="{url}" style="color:#1a1a1a;text-decoration:none;'
+                    f'font-size:13px;font-weight:500;">{proj}</a>'
                 )
                 linhas.append(
-                    f'<tr>{celula_tarefa(t)}'
+                    f'<tr>'
+                    f'{td(nome_link, nowrap=False)}'
                     f'<td style="padding:10px;border-bottom:1px solid #f8f8f8;vertical-align:top;">'
-                    f'{pendencia_html}</td>'
-                    f'{td(nome_acao, cor=cor_acao, negrito=True)}'
-                    f'{td(esp_str, cor="#888")}'
-                    f'{td(prazo_str)}'
+                    f'{badge_html}</td>'
+                    f'{td(str(len(grupo)), negrito=True)}'
+                    f'{td(fmt_d(prazo_min) if prazo_min else "—", cor=cor_prazo)}'
                     f'</tr>'
                 )
-        return tabela_wrap(linhas, ["Tarefa", "Pendência no fluxo", "Próxima ação", "Espera", "Prazo"])
+        return tabela_wrap(linhas, ["Projeto", "Tipo", "Quantidade", "Prazo"])
+
+    BADGE_LICIA   = '<span style="font-size:10px;padding:1px 7px;border-radius:4px;background:#fef3c7;color:#92400e;font-weight:600;">Revisão Lícia</span>'
+    TIPO_CORR     = '<span style="font-size:10px;padding:1px 7px;border-radius:4px;background:#dbeafe;color:#1e40af;font-weight:600;">Correção</span>'
+    TIPO_EXEC     = '<span style="font-size:10px;padding:1px 7px;border-radius:4px;background:#e5e7eb;color:#374151;font-weight:600;">Execução</span>'
 
     if rel["aguarda_licia_rev"]:
-        s2_licia = tabela_revisao(rel["aguarda_licia_rev"], "#92400e", "Lícia")
+        s2_licia = resumo_por_projeto([("Revisão Lícia", BADGE_LICIA, rel["aguarda_licia_rev"])])
     else:
         s2_licia = vazio("Nenhuma revisão aguardando Lícia no momento.")
 
@@ -803,54 +803,10 @@ def gerar_html(rel):
     willian_total = len(rel["aguarda_willian_rev"]) + len(willian_exec)
 
     if willian_total:
-        linhas_w = []
-        NCOLS_W = 5
-
-        corr_grupos = agrupar_por_projeto(rel["aguarda_willian_rev"])
-        exec_grupos = agrupar_por_projeto(willian_exec)
-        proj_ordem = list(dict.fromkeys(
-            [p for p, _ in corr_grupos] + [p for p, _ in exec_grupos]
-        ))
-        corr_map = dict(corr_grupos)
-        exec_map = dict(exec_grupos)
-
-        for proj in proj_ordem:
-            linhas_w.append(header_projeto(proj, NCOLS_W))
-            for t in corr_map.get(proj, []):
-                ri = t["revisao_info"]
-                ultima = parse_d(t["ultima_edicao"])
-                dias_esp = (hoje - ultima).days if ultima else None
-                esp_str = (str(dias_esp) + "d") if dias_esp is not None else "—"
-                prazo_str = fmt_d(t["d_limite_calc"]) if t["d_limite_calc"] else "—"
-                flow_html = rev_flow_html(ri["passos"]) if ri.get("passos") else ""
-                sit_html = (
-                    f'<span style="font-size:11px;color:#1e40af;">{ri["label"]}</span>'
-                    + flow_html
-                )
-                linhas_w.append(
-                    f'<tr>{celula_tarefa(t)}'
-                    f'{td(TIPO_CORR, nowrap=False)}'
-                    f'<td style="padding:10px;border-bottom:1px solid #f8f8f8;vertical-align:top;">{sit_html}</td>'
-                    f'{td(esp_str, cor="#888")}'
-                    f'{td(prazo_str)}'
-                    f'</tr>'
-                )
-            for t in exec_map.get(proj, []):
-                ultima = parse_d(t["ultima_edicao"])
-                dias_esp = (hoje - ultima).days if ultima else None
-                esp_str = (str(dias_esp) + "d") if dias_esp is not None else "—"
-                cor_prazo = "#e53e3e" if (t.get("dias_atraso") or 0) > 0 else "#555"
-                prazo_str = fmt_d(t["d_limite_calc"]) if t["d_limite_calc"] else "—"
-                sit_html = badge(t["status"]) if t["status"] else "—"
-                linhas_w.append(
-                    f'<tr>{celula_tarefa(t)}'
-                    f'{td(TIPO_EXEC, nowrap=False)}'
-                    f'<td style="padding:10px;border-bottom:1px solid #f8f8f8;vertical-align:top;">{sit_html}</td>'
-                    f'{td(esp_str, cor="#888")}'
-                    f'{td(prazo_str, cor=cor_prazo)}'
-                    f'</tr>'
-                )
-        s2_willian = tabela_wrap(linhas_w, ["Tarefa", "Tipo", "Situação", "Espera", "Prazo"])
+        s2_willian = resumo_por_projeto([
+            ("Correção", TIPO_CORR, rel["aguarda_willian_rev"]),
+            ("Execução",  TIPO_EXEC, willian_exec),
+        ])
     else:
         s2_willian = vazio("Nenhuma tarefa pendente com Willian no momento.")
 
