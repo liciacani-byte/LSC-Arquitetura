@@ -801,6 +801,33 @@ def gerar_html(rel):
     else:
         s2_willian = vazio("Nenhuma correção pendente com Willian no momento.")
 
+    willian_exec = [t for t in rel["willian"] if t["status"] != "Revisão"]
+    if willian_exec:
+        linhas_we = []
+        for proj, grupo in agrupar_por_projeto(willian_exec):
+            linhas_we.append(header_projeto(proj, 4))
+            for t in grupo:
+                prazo_str = fmt_d(t["d_limite_calc"]) if t["d_limite_calc"] else "—"
+                cor_prazo = "#e53e3e" if (t.get("dias_atraso") or 0) > 0 else "#555"
+                atraso_html = (
+                    f'<span style="color:#e53e3e;font-size:11px;"> · {t["dias_atraso"]}d atraso</span>'
+                    if (t.get("dias_atraso") or 0) > 0 else ""
+                )
+                linhas_we.append(
+                    f'<tr>{celula_tarefa(t)}'
+                    f'{td(badge(t["status"]) if t["status"] else "—", nowrap=False)}'
+                    f'{td(prazo_str + atraso_html, cor=cor_prazo, nowrap=False)}'
+                    f'</tr>'
+                )
+        s2_willian_exec_html = (
+            '<div style="margin-bottom:14px;">'
+            + sub_titulo("Tarefas de Willian para executar", len(willian_exec))
+            + tabela_wrap(linhas_we, ["Tarefa", "Status", "Prazo"])
+            + '</div>'
+        )
+    else:
+        s2_willian_exec_html = ""
+
     if rel["deps_externas"]:
         linhas = []
         for proj, grupo in agrupar_por_projeto(rel["deps_externas"]):
@@ -865,6 +892,7 @@ def gerar_html(rel):
         + '<div style="margin-bottom:14px;">'
         + sub_titulo("Aguardando Willian", len(rel["aguarda_willian_rev"])) + s2_willian
         + '</div>'
+        + s2_willian_exec_html
         + s2_deps_html
         + '<div style="margin-bottom:14px;">'
         + sub_titulo("Projetos sem movimentação", len(rel["proj_sem_mov"])) + s2_sem_mov
