@@ -423,39 +423,98 @@ def montar(tarefas):
 
 def selecionar_prioridades(rel):
     hoje = rel["hoje"]
-    candidatos = []
-    vistos = set()
+    projetos = {}
 
-    def add(peso, tipo, tarefa, resumo, acao):
-        if tarefa["id"] not in vistos:
-            candidatos.append({
-                "peso": peso, "tipo": tipo,
-                "tarefa": tarefa, "resumo": resumo, "acao": acao,
-            })
-            vistos.add(tarefa["id"])
+    def get_proj(nome):
+        if nome not in projetos:
+            projetos[nome] = {
+                "nome": nome,
+                "atrasadas": [], "vencem7": [],
+                "aguarda_licia": [], "aguarda_willian": [],
+                "representante": None,
+            }
+        return projetos[nome]
 
     for t in rel["atrasadas"]:
-        add(100 + (t.get("dias_atraso") or 0), "atrasada",
-            t, f'Atrasada há {t["dias_atraso"]}d', t["responsavel"]["nome"] or "—")
+        p = get_proj(t.get("projeto_nome") or "Sem projeto")
+        p["atrasadas"].append(t)
+        if not p["representante"]:
+            p["representante"] = t
 
     for t in rel["vencem7"]:
-        if t["d_limite_calc"]:
-            dias_rest = (t["d_limite_calc"] - hoje).days
-            add(90 - dias_rest, "prazo",
-                t, f'Prazo em {fmt_d(t["d_limite_calc"])} ({dias_rest}d)', t["responsavel"]["nome"] or "—")
+        p = get_proj(t.get("projeto_nome") or "Sem projeto")
+        p["vencem7"].append(t)
+        if not p["representante"]:
+            p["representante"] = t
 
     for t in rel["aguarda_licia_rev"]:
-        ultima = parse_d(t["ultima_edicao"])
-        dias_esp = (hoje - ultima).days if ultima else 0
-        add(60 + dias_esp, "revisao_licia", t, "Aguardando revisão de Lícia", "Lícia")
+        p = get_proj(t.get("projeto_nome") or "Sem projeto")
+        p["aguarda_licia"].append(t)
+        if not p["representante"]:
+            p["representante"] = t
 
     for t in rel["aguarda_willian_rev"]:
-        ultima = parse_d(t["ultima_edicao"])
-        dias_esp = (hoje - ultima).days if ultima else 0
-        add(55 + dias_esp, "revisao_willian", t, "Aguardando correção de Willian", "Willian")
+        p = get_proj(t.get("projeto_nome") or "Sem projeto")
+        p["aguarda_willian"].append(t)
+        if not p["representante"]:
+            p["representante"] = t
+
+    candidatos = []
+    for pn, p in projetos.items():
+        if not (p["atrasadas"] or p["vencem7"] or p["aguarda_licia"] or p["aguarda_willian"]):
+            continue
+        peso = 0
+        tipo_principal = None
+
+        if p["atrasadas"]:
+            max_atraso = max((t.get("dias_atraso") or 0) for t in p["atrasadas"])
+            n = len(p["atrasadas"])
+            peso_a = 100 + min(max_atraso, 30) + min(n * 3, 15)
+            if peso_a > peso:
+                peso = peso_a
+                tipo_principal = "atrasada"
+
+        if p["vencem7"]:
+            prazos = [t["d_limite_calc"] for t in p["vencem7"] if t["d_limite_calc"]]
+            prazo_min = min(prazos) if prazos else None
+            dias_rest = (prazo_min - hoje).days if prazo_min else 7
+            n = len(p["vencem7"])
+            peso_v = 80 + (7 - dias_rest) * 2 + min(n * 2, 6)
+            if peso_v > peso:
+                peso = peso_v
+                tipo_principal = tipo_principal or "prazo"
+
+        if not p["atrasadas"] and not p["vencem7"]:
+            if p["aguarda_licia"]:
+                n = len(p["aguarda_licia"])
+                peso_r = 40 + min(n * 2, 8)
+                if peso_r > peso:
+                    peso = peso_r
+                    tipo_principal = "revisao_licia"
+            elif p["aguarda_willian"]:
+                n = len(p["aguarda_willian"])
+                peso_r = 35 + min(n * 2, 8)
+                if peso_r > peso:
+                    peso = peso_r
+                    tipo_principal = "revisao_willian"
+
+        if tipo_principal:
+            candidatos.append({
+                "peso": peso, "tipo": tipo_principal,
+                "projeto": pn, "proj_data": p,
+                "representante": p["representante"],
+            })
 
     candidatos.sort(key=lambda x: -x["peso"])
-    return candidatos[:5]
+
+    resultado = []
+    for c in candidatos:
+        tem_prazo = bool(c["proj_data"]["atrasadas"] or c["proj_data"]["vencem7"])
+        if tem_prazo or c["peso"] > 42:
+            resultado.append(c)
+        if len(resultado) == 5:
+            break
+    return resultado
 
 
 # ── HTML helpers ────────────────────────────────────────────────────────────────
@@ -473,7 +532,7 @@ def badge(status):
     c, bg = BADGE_CORES.get(status, ("#555", "#f0f0f0"))
     return (
         f'<span style="display:inline-block;font-size:10px;padding:2px 8px;'
-        f'border-radius:99px;font-weight:500;background:{bg};color:{c};">' 
+        f'border-radius:99px;font-weight:500;background:{bg};color:{c};">'
         f'{status}</span>'
     )
 
@@ -625,28 +684,71 @@ def gerar_html(rel):
         "revisao_willian": ("#1e40af", "#dbeafe", "Aguarda Willian"),
     }
 
+    def _proxima_acao_prio(pd):
+        if pd["aguarda_licia"]:
+            extra = f" para liberar {len(pd['aguarda_licia'])} tarefa(s) de Willian" if pd["aguarda_willian"] else ""
+            return f"Lícia revisar{extra}"
+        if pd["aguarda_willian"]:
+            return f"Willian corrigir {len(pd['aguarda_willian'])} tarefa(s)"
+        if pd["atrasadas"]:
+            resps = sorted(set(t["responsavel"]["nome"] for t in pd["atrasadas"] if t["responsavel"]["nome"]))
+            return f"{' / '.join(resps) or '—'} retomar execução"
+        if pd["vencem7"]:
+            resps = sorted(set(t["responsavel"]["nome"] for t in pd["vencem7"] if t["responsavel"]["nome"]))
+            return f"{' / '.join(resps) or '—'} priorizar entrega"
+        return "—"
+
+    def _situacao_linhas_prio(p, pd):
+        linhas = []
+        if pd["atrasadas"]:
+            max_at = max((t.get("dias_atraso") or 0) for t in pd["atrasadas"])
+            n = len(pd["atrasadas"])
+            linhas.append(f'{n} tarefa(s) atrasada(s) · há {max_at}d')
+        if pd["vencem7"]:
+            prazos = [t["d_limite_calc"] for t in pd["vencem7"] if t["d_limite_calc"]]
+            prazo_min = min(prazos) if prazos else None
+            dias_rest = (prazo_min - hoje).days if prazo_min else None
+            suffix = f" · {dias_rest}d para entrega" if dias_rest is not None else ""
+            linhas.append(f'{len(pd["vencem7"])} tarefa(s) com prazo próximo{suffix}')
+        at_ids = {t["id"] for t in pd["atrasadas"]}
+        v7_ids = {t["id"] for t in pd["vencem7"]}
+        licia_extras   = [t for t in pd["aguarda_licia"]   if t["id"] not in at_ids and t["id"] not in v7_ids]
+        willian_extras = [t for t in pd["aguarda_willian"] if t["id"] not in at_ids and t["id"] not in v7_ids]
+        if licia_extras:
+            linhas.append(f'{len(licia_extras)} revisão(ões) aguardando Lícia')
+        if willian_extras:
+            linhas.append(f'{len(willian_extras)} correção(ões) aguardando Willian')
+        return linhas
+
     prioridades = selecionar_prioridades(rel)
     if prioridades:
         itens_prio = []
         for i, p in enumerate(prioridades, 1):
+            pd = p["proj_data"]
             cor_txt, cor_bg, lbl_tipo = TIPO_BADGE.get(p["tipo"], ("#555", "#f0f0f0", p["tipo"]))
-            proj_html = (
-                f' <span style="color:#bbb;font-size:12px;">· {p["tarefa"]["projeto_nome"]}</span>'
-                if p["tarefa"].get("projeto_nome") else ""
+            rep = p["representante"]
+            url = rep["url"] if rep else "#"
+            sit_linhas = _situacao_linhas_prio(p, pd)
+            sit_html = " &nbsp;·&nbsp; ".join(
+                f'<span style="color:#555;">{l}</span>' for l in sit_linhas
             )
+            acao = _proxima_acao_prio(pd)
             itens_prio.append(
                 f'<div style="display:flex;align-items:flex-start;gap:12px;padding:10px 0;'
                 f'border-bottom:1px solid #f8f8f8;">'
                 f'<span style="min-width:22px;height:22px;background:#1a1a1a;color:#fff;'
                 f'border-radius:50%;display:inline-flex;align-items:center;justify-content:center;'
                 f'font-size:10px;font-weight:700;flex-shrink:0;">{i}</span>'
-                f'<div>'
+                f'<div style="min-width:0;">'
+                f'<div style="margin-bottom:3px;">'
                 f'<span style="font-size:10px;padding:1px 7px;border-radius:4px;'
                 f'background:{cor_bg};color:{cor_txt};font-weight:600;margin-right:6px;">{lbl_tipo}</span>'
-                f'<a href="{p["tarefa"]["url"]}" style="color:#1a1a1a;text-decoration:none;'
-                f'font-size:13px;font-weight:500;">{p["tarefa"]["nome"]}</a>{proj_html}'
-                f'<div style="font-size:11px;color:#888;margin-top:3px;">'
-                f'{p["resumo"]} · Próxima ação: <strong>{p["acao"]}</strong></div>'
+                f'<a href="{url}" style="color:#1a1a1a;text-decoration:none;'
+                f'font-size:13px;font-weight:600;">{p["projeto"]}</a>'
+                f'</div>'
+                f'<div style="font-size:11px;color:#888;margin-top:2px;">{sit_html}</div>'
+                f'<div style="font-size:11px;color:#555;margin-top:4px;">'
+                f'Próxima ação: <strong>{acao}</strong></div>'
                 f'</div></div>'
             )
         prioridades_html = '<div>' + "".join(itens_prio) + '</div>'
