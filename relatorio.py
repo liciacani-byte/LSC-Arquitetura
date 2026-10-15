@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Relatório Operacional do Escritório — Simplific
+Relatório Diário de Produção — Simplific
 Busca todas as tarefas ativas do Notion e envia relatório por e-mail.
 """
 
@@ -33,11 +33,11 @@ MESES_PT = ["janeiro", "fevereiro", "março", "abril", "maio", "junho",
 DIAS_PT   = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
              "sexta-feira", "sábado", "domingo"]
 
-# palavras-chave que indicam projeto encerrado (case-insensitive, busca parcial)
 STATUS_PROJETO_INATIVO = {"finalizado", "cancelado", "arquivado", "concluído", "concluido", "suspenso"}
-
-# nome exato do projeto template (case-insensitive) — nunca deve aparecer no relatório
 PROJETO_TEMPLATE = "projeto base"
+
+# Indicadores de dependência externa — detectados no campo Observação
+KEYWORDS_DEP_EXTERNA = {"cliente", "fornecedor", "prefeitura", "topografia", "laudo", "externo", "terceiro"}
 
 
 def fmt_data_pt(d):
@@ -207,7 +207,6 @@ def extrair(t, usuarios):
                 f = v.get("formula", {})
                 if f.get("type") == "string" and f.get("string"):
                     return f["string"]
-        # fallback: rollups com conteúdo textual (exclui rollups de status/select)
         for k, v in props.items():
             if v.get("type") != "rollup":
                 continue
@@ -345,14 +344,14 @@ def info_revisao(t):
 
 def montar(tarefas):
     hoje = datetime.utcnow().date()
-    em3  = hoje + timedelta(days=3)
-    ha3  = hoje - timedelta(days=3)
+    em7  = hoje + timedelta(days=7)
     ha7  = hoje - timedelta(days=7)
 
-    atrasadas, vencem3 = [], []
-    revisoes, rev_paradas, rev_concluidas = [], [], []
-    aguarda_licia_ids = set()
-    aguarda_licia = []
+    atrasadas, vencem7 = [], []
+    revisoes = []
+    aguarda_licia_rev   = []
+    aguarda_willian_rev = []
+    deps_externas = []
     licia, willian = [], []
     proj_map = {}
 
@@ -367,25 +366,21 @@ def montar(tarefas):
             if prazo < hoje:
                 t["dias_atraso"] = (hoje - prazo).days
                 atrasadas.append(t)
-            elif prazo <= em3:
-                vencem3.append(t)
+            elif prazo <= em7:
+                vencem7.append(t)
 
         if t["status"] == "Revisão":
             ri = info_revisao(t)
             t["revisao_info"] = ri
             revisoes.append(t)
+            if ri["aguarda_licia"]:
+                aguarda_licia_rev.append(t)
+            else:
+                aguarda_willian_rev.append(t)
 
-            ultima = parse_d(t["ultima_edicao"])
-            if ultima and ultima < ha3:
-                t["dias_parado"] = (hoje - ultima).days
-                rev_paradas.append(t)
-
-            if ri["concluida"]:
-                rev_concluidas.append(t)
-
-            if ri["aguarda_licia"] and t["id"] not in aguarda_licia_ids:
-                aguarda_licia_ids.add(t["id"])
-                aguarda_licia.append(t)
+        obs = (t["observacao"] or "").lower()
+        if any(kw in obs for kw in KEYWORDS_DEP_EXTERNA):
+            deps_externas.append(t)
 
         if eh_licia:
             licia.append(t)
@@ -398,27 +393,69 @@ def montar(tarefas):
             if pnome not in proj_map or (ultima and (proj_map[pnome] is None or ultima > proj_map[pnome])):
                 proj_map[pnome] = ultima
 
-    proj_parados = []
+    proj_sem_mov = []
     for nome, ultima in proj_map.items():
         if ultima is None or ultima <= ha7:
             dias = (hoje - ultima).days if ultima else None
             ts_proj = [t for t in tarefas if t["projeto_nome"] == nome]
-            proj_parados.append({"nome": nome, "dias": dias, "ultima": ultima, "tarefas": ts_proj})
-    proj_parados.sort(key=lambda x: -(x["dias"] or 0))
+            proj_sem_mov.append({"nome": nome, "dias": dias, "ultima": ultima, "tarefas": ts_proj})
+    proj_sem_mov.sort(key=lambda x: -(x["dias"] or 0))
+
+    proj_risco = set(t["projeto_nome"] for t in atrasadas if t["projeto_nome"])
 
     return {
-        "hoje":           hoje,
-        "total":          len(tarefas),
-        "atrasadas":      sorted(atrasadas, key=lambda x: -(x["dias_atraso"] or 0)),
-        "vencem3":        sorted(vencem3, key=lambda x: x["d_limite_calc"]),
-        "revisoes":       revisoes,
-        "rev_paradas":    rev_paradas,
-        "rev_concluidas": rev_concluidas,
-        "aguarda_licia":  aguarda_licia,
-        "licia":          licia,
-        "willian":        willian,
-        "proj_parados":   proj_parados,
+        "hoje":               hoje,
+        "total":              len(tarefas),
+        "atrasadas":          sorted(atrasadas, key=lambda x: -(x["dias_atraso"] or 0)),
+        "vencem7":            sorted(vencem7, key=lambda x: x["d_limite_calc"]),
+        "revisoes":           revisoes,
+        "aguarda_licia_rev":  aguarda_licia_rev,
+        "aguarda_willian_rev": aguarda_willian_rev,
+        "deps_externas":      deps_externas,
+        "licia":              licia,
+        "willian":            willian,
+        "proj_sem_mov":       proj_sem_mov,
+        "proj_risco":         proj_risco,
     }
+
+
+# ── Seleção de prioridades ──────────────────────────────────────────────────────
+
+def selecionar_prioridades(rel):
+    hoje = rel["hoje"]
+    candidatos = []
+    vistos = set()
+
+    def add(peso, tipo, tarefa, resumo, acao):
+        if tarefa["id"] not in vistos:
+            candidatos.append({
+                "peso": peso, "tipo": tipo,
+                "tarefa": tarefa, "resumo": resumo, "acao": acao,
+            })
+            vistos.add(tarefa["id"])
+
+    for t in rel["atrasadas"]:
+        add(100 + (t.get("dias_atraso") or 0), "atrasada",
+            t, f'Atrasada há {t["dias_atraso"]}d', t["responsavel"]["nome"] or "—")
+
+    for t in rel["vencem7"]:
+        if t["d_limite_calc"]:
+            dias_rest = (t["d_limite_calc"] - hoje).days
+            add(90 - dias_rest, "prazo",
+                t, f'Prazo em {fmt_d(t["d_limite_calc"])} ({dias_rest}d)', t["responsavel"]["nome"] or "—")
+
+    for t in rel["aguarda_licia_rev"]:
+        ultima = parse_d(t["ultima_edicao"])
+        dias_esp = (hoje - ultima).days if ultima else 0
+        add(60 + dias_esp, "revisao_licia", t, "Aguardando revisão de Lícia", "Lícia")
+
+    for t in rel["aguarda_willian_rev"]:
+        ultima = parse_d(t["ultima_edicao"])
+        dias_esp = (hoje - ultima).days if ultima else 0
+        add(55 + dias_esp, "revisao_willian", t, "Aguardando correção de Willian", "Willian")
+
+    candidatos.sort(key=lambda x: -x["peso"])
+    return candidatos[:5]
 
 
 # ── HTML helpers ────────────────────────────────────────────────────────────────
@@ -436,7 +473,7 @@ def badge(status):
     c, bg = BADGE_CORES.get(status, ("#555", "#f0f0f0"))
     return (
         f'<span style="display:inline-block;font-size:10px;padding:2px 8px;'
-        f'border-radius:99px;font-weight:500;background:{bg};color:{c};">'
+        f'border-radius:99px;font-weight:500;background:{bg};color:{c};">' 
         f'{status}</span>'
     )
 
@@ -493,7 +530,6 @@ def header_projeto(nome, ncols):
 
 
 def agrupar_por_projeto(lista):
-    """Agrupa lista de tarefas por projeto preservando a ordem de primeira ocorrência."""
     grupos = OrderedDict()
     for t in lista:
         proj = t.get("projeto_nome") or "Sem projeto"
@@ -557,346 +593,357 @@ def divider():
 # ── Geração do HTML ─────────────────────────────────────────────────────────────
 
 def gerar_html(rel):
-    hoje      = rel["hoje"]
-    hoje_str  = fmt_data_pt(hoje)
-    aguarda_licia_externos = [
-        t for t in rel["aguarda_licia"] if t["id"] not in {x["id"] for x in rel["licia"]}
-    ]
+    hoje     = rel["hoje"]
+    hoje_str = fmt_data_pt(hoje)
 
-    n_licia_total = len(rel["licia"]) + len(aguarda_licia_externos)
+    # ── Seção 1 — Resumo Gerencial e Prioridades ─────────────────────────────────
+
+    def card_indicador(label, valor, cor_label, cor_valor, cor_fundo):
+        return (
+            f'<div style="flex:1;min-width:110px;background:{cor_fundo};'
+            f'border-radius:8px;padding:14px 16px;">'
+            f'<p style="margin:0;font-size:10px;text-transform:uppercase;'
+            f'letter-spacing:.5px;color:{cor_label};">{label}</p>'
+            f'<p style="margin:6px 0 0;font-size:26px;font-weight:700;color:{cor_valor};">{valor}</p>'
+            '</div>'
+        )
+
     cards = (
         '<div style="display:flex;gap:10px;margin-bottom:28px;flex-wrap:wrap;">'
-        '<div style="flex:1;min-width:110px;background:#fff3f3;border-radius:8px;padding:14px 16px;">'
-        '<p style="margin:0;font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:#c0392b;">Atrasadas</p>'
-        f'<p style="margin:6px 0 0;font-size:26px;font-weight:700;color:#c0392b;">{len(rel["atrasadas"])}</p>'
-        '</div>'
-        '<div style="flex:1;min-width:110px;background:#fff8f0;border-radius:8px;padding:14px 16px;">'
-        '<p style="margin:0;font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:#c05621;">Revisão parada</p>'
-        f'<p style="margin:6px 0 0;font-size:26px;font-weight:700;color:#c05621;">{len(rel["rev_paradas"])}</p>'
-        '</div>'
-        '<div style="flex:1;min-width:110px;background:#f0f4ff;border-radius:8px;padding:14px 16px;">'
-        '<p style="margin:0;font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:#2c5282;">Dependem Lícia</p>'
-        f'<p style="margin:6px 0 0;font-size:26px;font-weight:700;color:#2c5282;">{n_licia_total}</p>'
-        '</div>'
-        '<div style="flex:1;min-width:110px;background:#f7f7f7;border-radius:8px;padding:14px 16px;">'
-        '<p style="margin:0;font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:#555;">Total ativo</p>'
-        f'<p style="margin:6px 0 0;font-size:26px;font-weight:700;color:#1a1a1a;">{rel["total"]}</p>'
-        '</div>'
-        '</div>'
+        + card_indicador("Total ativo",       rel["total"],             "#555",    "#1a1a1a", "#f7f7f7")
+        + card_indicador("Atrasadas",         len(rel["atrasadas"]),    "#c0392b", "#c0392b", "#fff3f3")
+        + card_indicador("Em revisão",        len(rel["revisoes"]),     "#92400e", "#92400e", "#fffbeb")
+        + card_indicador("Entregas 7 dias",   len(rel["vencem7"]),      "#1e40af", "#1e40af", "#eff6ff")
+        + card_indicador("Projetos c/ risco", len(rel["proj_risco"]),   "#5b21b6", "#5b21b6", "#f5f3ff")
+        + '</div>'
     )
 
-    # ── Seção 1 — Atenção imediata ───────────────────────────────────────────────
-    ncols_s1 = 4
-    if rel["atrasadas"]:
-        linhas = []
-        for proj, grupo in agrupar_por_projeto(rel["atrasadas"]):
-            linhas.append(header_projeto(proj, ncols_s1))
-            for t in grupo:
-                atraso_str = str(t["dias_atraso"]) + "d"
-                resp_nome = t["responsavel"]["nome"] or "—"
-                linhas.append(
-                    f'<tr>{celula_tarefa(t)}{td(badge(t["status"]))}'
-                    f'{td(resp_nome, nowrap=True)}'
-                    f'{td(atraso_str, cor="#e53e3e", negrito=True)}</tr>'
-                )
-        s1_atrasadas = tabela_wrap(linhas, ["Tarefa", "Status", "Responsável", "Atraso"])
+    TIPO_BADGE = {
+        "atrasada":        ("#fff",    "#c0392b", "Atrasada"),
+        "prazo":           ("#fff",    "#c05621", "Prazo próximo"),
+        "revisao_licia":   ("#92400e", "#fef3c7", "Aguarda Lícia"),
+        "revisao_willian": ("#1e40af", "#dbeafe", "Aguarda Willian"),
+    }
+
+    prioridades = selecionar_prioridades(rel)
+    if prioridades:
+        itens_prio = []
+        for i, p in enumerate(prioridades, 1):
+            cor_txt, cor_bg, lbl_tipo = TIPO_BADGE.get(p["tipo"], ("#555", "#f0f0f0", p["tipo"]))
+            proj_html = (
+                f' <span style="color:#bbb;font-size:12px;">· {p["tarefa"]["projeto_nome"]}</span>'
+                if p["tarefa"].get("projeto_nome") else ""
+            )
+            itens_prio.append(
+                f'<div style="display:flex;align-items:flex-start;gap:12px;padding:10px 0;'
+                f'border-bottom:1px solid #f8f8f8;">'
+                f'<span style="min-width:22px;height:22px;background:#1a1a1a;color:#fff;'
+                f'border-radius:50%;display:inline-flex;align-items:center;justify-content:center;'
+                f'font-size:10px;font-weight:700;flex-shrink:0;">{i}</span>'
+                f'<div>'
+                f'<span style="font-size:10px;padding:1px 7px;border-radius:4px;'
+                f'background:{cor_bg};color:{cor_txt};font-weight:600;margin-right:6px;">{lbl_tipo}</span>'
+                f'<a href="{p["tarefa"]["url"]}" style="color:#1a1a1a;text-decoration:none;'
+                f'font-size:13px;font-weight:500;">{p["tarefa"]["nome"]}</a>{proj_html}'
+                f'<div style="font-size:11px;color:#888;margin-top:3px;">'
+                f'{p["resumo"]} · Próxima ação: <strong>{p["acao"]}</strong></div>'
+                f'</div></div>'
+            )
+        prioridades_html = '<div>' + "".join(itens_prio) + '</div>'
     else:
-        s1_atrasadas = vazio("Nenhuma tarefa atrasada. Preencha D. Início + Dias úteis para ativar esta seção.")
+        prioridades_html = alerta("✅ Nenhuma prioridade crítica identificada para o próximo dia útil.", "green")
 
-    if rel["vencem3"]:
-        linhas = []
-        for proj, grupo in agrupar_por_projeto(rel["vencem3"]):
-            linhas.append(header_projeto(proj, ncols_s1))
-            for t in grupo:
-                resp_nome = t["responsavel"]["nome"] or "—"
-                linhas.append(
-                    f'<tr>{celula_tarefa(t)}{td(badge(t["status"]))}'
-                    f'{td(resp_nome)}'
-                    f'{td(fmt_d(t["d_limite_calc"]), cor="#c05621")}</tr>'
-                )
-        s1_vence3 = tabela_wrap(linhas, ["Tarefa", "Status", "Responsável", "Limite"])
-    else:
-        s1_vence3 = vazio("Nenhuma tarefa vence nos próximos 3 dias.")
-
-    alertas_criticos = []
-    for t in rel["rev_paradas"]:
-        dias_p = t.get("dias_parado", "?")
-        alertas_criticos.append(alerta(
-            f'<strong>Revisão travada há {dias_p} dias</strong> — '
-            f'<a href="{t["url"]}" style="color:#92400e;">{t["nome"]}</a> '
-            f'({t["projeto_nome"]}) · {t["revisao_info"]["label"]}', "red"))
-    for t in rel["rev_concluidas"]:
-        alertas_criticos.append(alerta(
-            f'<strong>✅ Revisão concluída por Willian</strong> — '
-            f'<a href="{t["url"]}" style="color:#065f46;">{t["nome"]}</a> '
-            f'({t["projeto_nome"]}) · Aguarda validação final de Lícia.', "green"))
-    for p in rel["proj_parados"][:2]:
-        n_tf = len(p["tarefas"])
-        alertas_criticos.append(alerta(
-            f'<strong>Projeto parado há {p["dias"]} dias</strong> — {p["nome"]} · '
-            f'{n_tf} tarefa(s) aberta(s)', "yellow"))
-    if not alertas_criticos:
-        alertas_criticos.append(alerta("Nenhuma prioridade crítica identificada hoje.", "blue"))
-
-    alertas_criticos_html = "".join(alertas_criticos)
     s1 = (
         '<div style="margin-bottom:26px;">'
-        + secao_titulo("Seção 1 — Atenção imediata")
-        + '<div style="margin-bottom:14px;">'
-        + sub_titulo("Atrasadas", len(rel["atrasadas"])) + s1_atrasadas
-        + '</div>'
-        + '<div style="margin-bottom:14px;">'
-        + sub_titulo("Vencem nos próximos 3 dias", len(rel["vencem3"])) + s1_vence3
-        + '</div>'
-        + sub_titulo("Prioridades críticas")
-        + alertas_criticos_html
+        + secao_titulo("Seção 1 — Resumo Gerencial e Prioridades")
+        + cards
+        + sub_titulo("Prioridades do próximo dia útil")
+        + prioridades_html
         + '</div>'
     )
 
-    # ── Seção 2 — Revisões ───────────────────────────────────────────────────────
-    paradas_ids = {t["id"] for t in rel["rev_paradas"]}
-    revisoes_ordenadas = (
-        sorted(rel["rev_paradas"], key=lambda x: -(x.get("dias_parado") or 0))
-        + [t for t in rel["revisoes"] if t["id"] not in paradas_ids]
-    )
+    # ── Seção 2 — Gargalos e Pendências ──────────────────────────────────────────
 
-    ncols_s2 = 4
-    if revisoes_ordenadas:
+    NCOLS_G = 5
+
+    def tabela_revisao(lista, cor_acao, nome_acao):
         linhas = []
-        for proj, grupo in agrupar_por_projeto(revisoes_ordenadas):
-            linhas.append(header_projeto(proj, ncols_s2))
+        for proj, grupo in agrupar_por_projeto(lista):
+            linhas.append(header_projeto(proj, NCOLS_G))
             for t in grupo:
                 ri = t["revisao_info"]
-                aguarda = "Lícia" if ri["aguarda_licia"] else "Willian"
-                eh_parada = t["id"] in paradas_ids
                 ultima = parse_d(t["ultima_edicao"])
-                dias_p = t.get("dias_parado") or ((hoje - ultima).days if ultima else None)
-                parado_str = (str(dias_p) + "d") if dias_p is not None else "—"
-                row_style = ' style="background:#fff5f5;"' if eh_parada else ""
-                cor_ag = "#c0392b" if eh_parada else "#555"
-                cor_p  = "#e53e3e" if eh_parada else "#aaa"
-                linhas.append(
-                    f'<tr{row_style}>'
-                    f'{celula_tarefa(t, mostrar_flow=True)}'
-                    f'{td(t["etapa"] or "—")}'
-                    f'{td(aguarda, cor=cor_ag, negrito=eh_parada)}'
-                    f'{td(parado_str, cor=cor_p, negrito=eh_parada)}'
-                    f'</tr>'
-                )
-        s2_tabela = tabela_wrap(linhas, ["Tarefa", "Etapa", "Aguardando", "Parado há"])
-    else:
-        s2_tabela = vazio("Nenhuma tarefa em revisão no momento.")
-
-    s2 = (
-        '<div style="margin-bottom:26px;">'
-        + secao_titulo("Seção 2 — Revisões")
-        + sub_titulo("Fluxo de revisões", len(revisoes_ordenadas))
-        + s2_tabela
-        + '</div>'
-    )
-
-    # ── Seção 3 — Dependem da Lícia ──────────────────────────────────────────────
-    ncols_s3 = 5
-    if rel["licia"]:
-        linhas = []
-        for proj, grupo in agrupar_por_projeto(rel["licia"]):
-            linhas.append(header_projeto(proj, ncols_s3))
-            for t in grupo:
-                ultima = parse_d(t["ultima_edicao"])
-                dias_sem_mov = (hoje - ultima).days if ultima else None
-                sem_mov_str = (str(dias_sem_mov) + "d") if dias_sem_mov is not None else "—"
+                dias_esp = (hoje - ultima).days if ultima else None
+                esp_str = (str(dias_esp) + "d") if dias_esp is not None else "—"
                 prazo_str = fmt_d(t["d_limite_calc"]) if t["d_limite_calc"] else "—"
+                flow_html = rev_flow_html(ri["passos"]) if ri.get("passos") else ""
+                pendencia_html = (
+                    f'<span style="font-size:11px;color:{cor_acao};">{ri["label"]}</span>'
+                    + flow_html
+                )
                 linhas.append(
                     f'<tr>{celula_tarefa(t)}'
-                    f'{td(badge(t["status"]))}'
-                    f'{td(t["etapa"] or "—")}'
+                    f'<td style="padding:10px;border-bottom:1px solid #f8f8f8;vertical-align:top;">'
+                    f'{pendencia_html}</td>'
+                    f'{td(nome_acao, cor=cor_acao, negrito=True)}'
+                    f'{td(esp_str, cor="#888")}'
                     f'{td(prazo_str)}'
-                    f'{td(sem_mov_str, cor="#888")}</tr>'
+                    f'</tr>'
                 )
-        s3_licia = tabela_wrap(linhas, ["Tarefa", "Status", "Etapa", "Prazo", "Sem mov."])
+        return tabela_wrap(linhas, ["Tarefa", "Pendência no fluxo", "Próxima ação", "Espera", "Prazo"])
+
+    if rel["aguarda_licia_rev"]:
+        s2_licia = tabela_revisao(rel["aguarda_licia_rev"], "#92400e", "Lícia")
     else:
-        s3_licia = vazio("Nenhuma tarefa ativa para Lícia.")
+        s2_licia = vazio("Nenhuma revisão aguardando Lícia no momento.")
 
-    s3 = (
-        '<div style="margin-bottom:26px;">'
-        + secao_titulo("Seção 3 — Dependem da Lícia")
-        + sub_titulo("Tarefas ativas — responsável: Lícia", len(rel["licia"]))
-        + s3_licia
-        + '</div>'
-    )
+    if rel["aguarda_willian_rev"]:
+        s2_willian = tabela_revisao(rel["aguarda_willian_rev"], "#1e40af", "Willian")
+    else:
+        s2_willian = vazio("Nenhuma correção pendente com Willian no momento.")
 
-    # ── Seção 4 — Pode virar problema ────────────────────────────────────────────
-    if rel["proj_parados"]:
+    if rel["deps_externas"]:
         linhas = []
-        for p in rel["proj_parados"]:
+        for proj, grupo in agrupar_por_projeto(rel["deps_externas"]):
+            linhas.append(header_projeto(proj, 4))
+            for t in grupo:
+                obs_html = (
+                    f'<span style="font-size:12px;color:#888;font-style:italic;">'
+                    f'{t["observacao"]}</span>'
+                )
+                linhas.append(
+                    f'<tr>{celula_tarefa(t)}'
+                    f'<td style="padding:10px;border-bottom:1px solid #f8f8f8;vertical-align:top;">'
+                    f'{obs_html}</td>'
+                    f'{td(t["responsavel"]["nome"] or "—", cor="#555")}'
+                    f'{td(fmt_d(t["d_limite_calc"]) if t["d_limite_calc"] else "—")}'
+                    f'</tr>'
+                )
+        s2_deps_html = (
+            '<div style="margin-bottom:14px;">'
+            + sub_titulo("Dependências externas", len(rel["deps_externas"]))
+            + tabela_wrap(linhas, ["Tarefa", "Observação", "Responsável", "Prazo"])
+            + '</div>'
+        )
+    else:
+        s2_deps_html = ""
+
+    if rel["proj_sem_mov"]:
+        linhas = []
+        for p in rel["proj_sem_mov"]:
             cor_dias = "#e53e3e" if (p["dias"] or 0) >= 14 else "#c05621"
+            dias_str = (str(p["dias"]) + "d") if p["dias"] is not None else "—"
+            n_tf = len(p["tarefas"])
             statuses = ", ".join(sorted(set(t["status"] for t in p["tarefas"])))
             responsaveis = ", ".join(sorted(set(
                 t["responsavel"]["nome"] for t in p["tarefas"] if t["responsavel"]["nome"]
-            )))
-            nome_bold = "<strong>" + p["nome"] + "</strong>"
-            dias_str = str(p["dias"]) + "d"
-            n_tf = len(p["tarefas"])
+            ))) or "—"
             tarefas_html = (
                 f'{n_tf} tarefa(s)<br>'
                 f'<span style="color:#bbb;font-size:11px;">{statuses}</span>'
             )
             linhas.append(
                 f'<tr>'
-                f'{td(nome_bold, nowrap=False)}'
+                f'{td("<strong>" + p["nome"] + "</strong>", nowrap=False)}'
                 f'{td(dias_str, cor=cor_dias, negrito=True)}'
                 f'{td(fmt_d(p["ultima"]))}'
                 f'{td(tarefas_html, nowrap=False)}'
-                f'{td(responsaveis or "—", cor="#888")}'
+                f'{td(responsaveis, cor="#888")}'
                 f'</tr>'
             )
-        s4_parados = tabela_wrap(linhas, ["Projeto", "Parado há", "Última ativ.", "Tarefas abertas", "Responsável(is)"])
+        s2_sem_mov = tabela_wrap(
+            linhas, ["Projeto", "Parado há", "Última ativ.", "Tarefas abertas", "Responsável(is)"]
+        )
     else:
-        s4_parados = vazio("Nenhum projeto parado há mais de 7 dias.")
+        s2_sem_mov = vazio("Nenhum projeto sem movimentação há mais de 7 dias.")
 
-    gargalos = []
-    iniciar_licia = sum(1 for t in rel["licia"] if t["status"] == "Iniciar")
-    if iniciar_licia >= 3:
-        gargalos.append(alerta(
-            f'<strong>{iniciar_licia} tarefas com status "Iniciar"</strong> concentradas em Lícia. '
-            f'Risco de acúmulo.', "yellow"))
-    if len(rel["rev_paradas"]) >= 2:
-        gargalos.append(alerta(
-            f'<strong>{len(rel["rev_paradas"])} revisões paradas simultaneamente.</strong> '
-            f'Gargalo no fluxo de qualidade do escritório.', "red"))
-    if len(rel["proj_parados"]) >= 3:
-        gargalos.append(alerta(
-            f'<strong>{len(rel["proj_parados"])} projetos parados.</strong> '
-            f'Verificar se há dependências externas (cliente, fornecedor) bloqueando.', "yellow"))
-    if not gargalos:
-        gargalos.append(alerta("Nenhum gargalo crítico além dos já listados acima.", "blue"))
+    s2 = (
+        '<div style="margin-bottom:26px;">'
+        + secao_titulo("Seção 2 — Gargalos e Pendências")
+        + '<div style="margin-bottom:14px;">'
+        + sub_titulo("Aguardando Lícia", len(rel["aguarda_licia_rev"])) + s2_licia
+        + '</div>'
+        + '<div style="margin-bottom:14px;">'
+        + sub_titulo("Aguardando Willian", len(rel["aguarda_willian_rev"])) + s2_willian
+        + '</div>'
+        + s2_deps_html
+        + '<div style="margin-bottom:14px;">'
+        + sub_titulo("Projetos sem movimentação", len(rel["proj_sem_mov"])) + s2_sem_mov
+        + '</div>'
+        + '</div>'
+    )
 
-    gargalos_html = "".join(gargalos)
+    # ── Seção 3 — Prazos e Próximas Entregas ─────────────────────────────────────
+
+    proj_atrasados = OrderedDict()
+    for t in rel["atrasadas"]:
+        pn = t.get("projeto_nome") or "Sem projeto"
+        proj_atrasados.setdefault(pn, []).append(t)
+
+    proj_vencem7 = OrderedDict()
+    for t in rel["vencem7"]:
+        pn = t.get("projeto_nome") or "Sem projeto"
+        if pn not in proj_atrasados:
+            proj_vencem7.setdefault(pn, []).append(t)
+
+    COLUNAS_S3 = ["Projeto", "Prazo", "Situação", "Pendências", "Responsável"]
+
+    def proj_row_s3(proj_nome, tarefas_proj, modo):
+        prazos = [t["d_limite_calc"] for t in tarefas_proj if t["d_limite_calc"]]
+        prazo_min = min(prazos) if prazos else None
+        responsaveis = ", ".join(sorted(set(
+            t["responsavel"]["nome"] for t in tarefas_proj if t["responsavel"]["nome"]
+        ))) or "—"
+        n = len(tarefas_proj)
+        status_counts = {}
+        for t in tarefas_proj:
+            s = t["status"]
+            status_counts[s] = status_counts.get(s, 0) + 1
+        status_str = ", ".join(
+            f'{v} em {k}' for k, v in sorted(status_counts.items(), key=lambda x: -x[1])
+        )
+        pendencias_html = (
+            f'{n} tarefa(s)<br>'
+            f'<span style="font-size:11px;color:#bbb;">{status_str}</span>'
+        )
+        url = tarefas_proj[0]["url"]
+        nome_link = (
+            f'<a href="{url}" style="color:#1a1a1a;text-decoration:none;'
+            f'font-weight:600;font-size:13px;">{proj_nome}</a>'
+        )
+        if modo == "atrasado":
+            max_atraso = max((t.get("dias_atraso") or 0) for t in tarefas_proj)
+            situacao_html = f'<span style="color:#e53e3e;font-weight:600;">Atrasado · {max_atraso}d</span>'
+            prazo_html = fmt_d(prazo_min) if prazo_min else "—"
+            cor_prazo = "#e53e3e"
+        else:
+            dias_rest = (prazo_min - hoje).days if prazo_min else None
+            cor_prazo = "#c05621" if (dias_rest is not None and dias_rest <= 3) else "#555"
+            prazo_html = fmt_d(prazo_min) if prazo_min else "—"
+            situacao_html = (
+                f'<span style="color:{cor_prazo};font-weight:600;">Em {dias_rest}d</span>'
+                if dias_rest is not None
+                else '<span style="color:#888;">Em andamento</span>'
+            )
+        return (
+            f'<tr>'
+            f'{td(nome_link, nowrap=False)}'
+            f'{td(prazo_html, cor=cor_prazo)}'
+            f'{td(situacao_html, nowrap=False)}'
+            f'{td(pendencias_html, nowrap=False)}'
+            f'{td(responsaveis, cor="#888")}'
+            f'</tr>'
+        )
+
+    if proj_atrasados:
+        linhas = [proj_row_s3(pn, ts, "atrasado") for pn, ts in proj_atrasados.items()]
+        s3_atrasados = tabela_wrap(linhas, COLUNAS_S3)
+    else:
+        s3_atrasados = vazio(
+            "Nenhum projeto com tarefas atrasadas. Preencha D. Início + Dias úteis para ativar esta seção."
+        )
+
+    if proj_vencem7:
+        linhas = [proj_row_s3(pn, ts, "vencem") for pn, ts in proj_vencem7.items()]
+        s3_vencem = tabela_wrap(linhas, COLUNAS_S3)
+    else:
+        s3_vencem = vazio("Nenhum projeto com entregas nos próximos 7 dias.")
+
+    s3 = (
+        '<div style="margin-bottom:26px;">'
+        + secao_titulo("Seção 3 — Prazos e Próximas Entregas")
+        + '<div style="margin-bottom:14px;">'
+        + sub_titulo("Atrasados", len(proj_atrasados)) + s3_atrasados
+        + '</div>'
+        + '<div style="margin-bottom:14px;">'
+        + sub_titulo("Próximos 7 dias", len(proj_vencem7)) + s3_vencem
+        + '</div>'
+        + '</div>'
+    )
+
+    # ── Seção 4 — Equipe e Produtividade ─────────────────────────────────────────
+
+    def equipe_card(nome, tarefas_pessoa, aguarda_rev, vencem7_all):
+        ids_pessoa = {t["id"] for t in tarefas_pessoa}
+        n_total_p  = len(tarefas_pessoa)
+        n_exec     = sum(1 for t in tarefas_pessoa if t["status"] != "Revisão")
+        n_rev_acao = len(aguarda_rev)
+        n_atras_p  = sum(1 for t in tarefas_pessoa if (t.get("dias_atraso") or 0) > 0)
+        n_vence7_p = sum(1 for t in vencem7_all if t["id"] in ids_pessoa)
+
+        def linha_stat(label, valor, cor="#1a1a1a", negrito=False):
+            peso = "font-weight:600;" if negrito else ""
+            return (
+                f'<div style="display:flex;justify-content:space-between;padding:7px 0;'
+                f'border-bottom:1px solid #f8f8f8;">'
+                f'<span style="font-size:13px;color:#555;">{label}</span>'
+                f'<span style="font-size:13px;color:{cor};{peso}">{valor}</span>'
+                f'</div>'
+            )
+
+        alertas_p = []
+        if n_atras_p > 0:
+            alertas_p.append(alerta(f'{n_atras_p} tarefa(s) atrasada(s).', "red"))
+        if n_rev_acao > 0:
+            alertas_p.append(alerta(f'{n_rev_acao} revisão(ões) aguardando ação de {nome}.', "yellow"))
+        alerta_html = "".join(alertas_p) if alertas_p else alerta(
+            f'Carga controlada — {n_total_p} tarefa(s) ativa(s).', "green"
+        )
+
+        return (
+            '<div style="flex:1;min-width:260px;border:1px solid #eee;border-radius:8px;'
+            'padding:16px 18px;margin-bottom:14px;">'
+            f'<p style="margin:0 0 12px;font-size:13px;font-weight:700;color:#1a1a1a;">{nome}</p>'
+            + linha_stat("Total de tarefas", n_total_p)
+            + linha_stat("Em execução", n_exec)
+            + linha_stat(
+                "Revisões aguardando ação", n_rev_acao,
+                cor="#c05621" if n_rev_acao > 0 else "#1a1a1a",
+                negrito=n_rev_acao > 0,
+            )
+            + linha_stat(
+                "Tarefas atrasadas", n_atras_p,
+                cor="#e53e3e" if n_atras_p > 0 else "#1a1a1a",
+                negrito=n_atras_p > 0,
+            )
+            + linha_stat("Entregas nos próximos 7 dias", n_vence7_p)
+            + f'<div style="margin-top:12px;">{alerta_html}</div>'
+            + '</div>'
+        )
+
+    s4_licia   = equipe_card("Lícia",   rel["licia"],   rel["aguarda_licia_rev"],   rel["vencem7"])
+    s4_willian = equipe_card("Willian", rel["willian"], rel["aguarda_willian_rev"], rel["vencem7"])
+
     s4 = (
         '<div style="margin-bottom:26px;">'
-        + secao_titulo("Seção 4 — Pode virar problema")
-        + '<div style="margin-bottom:14px;">'
-        + sub_titulo("Projetos parados há mais de 7 dias", len(rel["proj_parados"])) + s4_parados
-        + '</div>'
-        + sub_titulo("Gargalos identificados")
-        + gargalos_html
-        + '</div>'
+        + secao_titulo("Seção 4 — Equipe e Produtividade")
+        + '<div style="display:flex;gap:16px;flex-wrap:wrap;">'
+        + s4_licia + s4_willian
+        + '</div></div>'
     )
 
-    # ── Seção 5 — Visão Willian ──────────────────────────────────────────────────
-    ncols_s5 = 5
-    if rel["willian"]:
-        linhas = []
-        for proj, grupo in agrupar_por_projeto(rel["willian"]):
-            linhas.append(header_projeto(proj, ncols_s5))
-            for t in grupo:
-                ri = t.get("revisao_info")
-                flow_cell = celula_tarefa(t, mostrar_flow=(t["status"] == "Revisão"))
-                prazo_str = fmt_d(t["d_limite_calc"]) if t["d_limite_calc"] else "—"
-                if t["status"] == "Revisão" and ri and ri["aguarda_licia"]:
-                    ultima = parse_d(t["ultima_edicao"])
-                    dias_b = (hoje - ultima).days if ultima else "?"
-                    bloqueio = f'<span style="color:#c0392b;font-size:12px;">Aguarda Lícia · {dias_b}d</span>'
-                else:
-                    bloqueio = "—"
-                linhas.append(
-                    f'<tr>{flow_cell}'
-                    f'{td(badge(t["status"]))}'
-                    f'{td(t["etapa"] or "—")}'
-                    f'{td(prazo_str)}'
-                    f'{td(bloqueio, nowrap=False)}</tr>'
-                )
-        s5_willian = tabela_wrap(linhas, ["Tarefa", "Status", "Etapa", "Prazo", "Bloqueio"])
-    else:
-        s5_willian = vazio("Nenhuma tarefa ativa para Willian.")
-
-    n_willian = len(rel["willian"])
-    n_willian_rev = sum(1 for t in rel["willian"] if t["status"] == "Revisão")
-    if n_willian >= 6:
-        sobrecarga = alerta(
-            f'<strong>Willian com {n_willian} tarefas ativas.</strong> Verificar capacidade.', "yellow")
-    elif n_willian_rev >= 2:
-        sobrecarga = alerta(
-            f'<strong>{n_willian_rev} tarefas de Willian em Revisão simultaneamente.</strong> '
-            f'Verificar se alguma está acumulando ciclos.', "yellow")
-    elif n_willian == 0:
-        sobrecarga = alerta("Willian sem tarefas ativas. Verificar se há novas tarefas a designar.", "blue")
-    else:
-        sobrecarga = alerta(
-            f'<strong>Willian com carga controlada — {n_willian} tarefa(s) ativa(s).</strong>', "green")
-
-    s5 = (
-        '<div style="margin-bottom:26px;">'
-        + secao_titulo("Seção 5 — Visão Willian")
-        + '<div style="margin-bottom:14px;">'
-        + sub_titulo("Tarefas ativas — responsável: Willian", n_willian) + s5_willian
-        + '</div>'
-        + sobrecarga
-        + '</div>'
-    )
-
-    # ── Seção 6 — Resumo executivo ───────────────────────────────────────────────
-    pontos = []
-
-    if rel["atrasadas"]:
-        nomes = ", ".join(t["nome"] for t in rel["atrasadas"][:3])
-        sufixo = "..." if len(rel["atrasadas"]) > 3 else ""
-        pontos.append(alerta(
-            f'<strong>Tarefas atrasadas ({len(rel["atrasadas"])}):</strong> {nomes}{sufixo}', "red"))
-
-    if rel["rev_paradas"]:
-        p = rel["rev_paradas"][0]
-        dias_p = p.get("dias_parado", "?")
-        pontos.append(alerta(
-            f'<strong>Revisão crítica:</strong> {p["nome"]} ({p["projeto_nome"]}) parada há '
-            f'{dias_p} dias. {p["revisao_info"]["label"]}.', "red"))
-
-    if rel["rev_concluidas"]:
-        for t in rel["rev_concluidas"]:
-            pontos.append(alerta(
-                f'<strong>✅ Ação necessária:</strong> {t["nome"]} ({t["projeto_nome"]}) — '
-                f'Willian concluiu todas as correções. Lícia deve validar e finalizar.', "green"))
-
-    if rel["proj_parados"]:
-        maior = rel["proj_parados"][0]
-        pontos.append(alerta(
-            f'<strong>Maior risco de abandono:</strong> {maior["nome"]} sem atividade há '
-            f'{maior["dias"]} dias. Verificar dependências ou retomar com o cliente.', "yellow"))
-
-    n_total_licia = len(rel["licia"]) + len(aguarda_licia_externos)
-    pontos.append(alerta(
-        f'<strong>Gargalo Lícia:</strong> {len(rel["licia"])} tarefa(s) como responsável + '
-        f'{len(aguarda_licia_externos)} aguardando revisão de Lícia = {n_total_licia} itens dependentes.', "blue"))
-
-    if not rel["atrasadas"] and not rel["rev_paradas"] and not rel["rev_concluidas"] and not rel["proj_parados"]:
-        pontos = [alerta("✅ Escritório em dia. Nenhum item crítico identificado.", "green")]
-
-    s6 = (
-        '<div style="margin-bottom:16px;">'
-        + secao_titulo("Seção 6 — Resumo executivo")
-        + "".join(pontos)
-        + '</div>'
-    )
-
+    # ── Montagem final ──────────────────────────────────────────────────────────
     corpo = (
-        cards
-        + s1 + divider()
+        s1 + divider()
         + s2 + divider()
         + s3 + divider()
-        + s4 + divider()
-        + s5 + divider()
-        + s6
-        + '<p style="text-align:right;font-size:11px;color:#ccc;margin:24px 0 0;">Gerado automaticamente · Simplific</p>'
+        + s4
+        + '<p style="text-align:right;font-size:11px;color:#ccc;margin:24px 0 0;">'
+        + 'Gerado automaticamente · Simplific</p>'
     )
     return (
         '<!DOCTYPE html><html>'
-        '<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>'
-        '<body style="margin:0;padding:0;background:#f0f0f0;font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;color:#1a1a1a;">'
+        '<head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1"></head>'
+        '<body style="margin:0;padding:0;background:#f0f0f0;'
+        'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;color:#1a1a1a;">'
         '<div style="max-width:720px;margin:32px auto;">'
         '<div style="background:#1a1a1a;padding:24px 28px;border-radius:10px 10px 0 0;">'
-        '<p style="margin:0;color:#666;font-size:11px;text-transform:uppercase;letter-spacing:1.5px;">Relatório Operacional · Escritório</p>'
+        '<p style="margin:0;color:#666;font-size:11px;text-transform:uppercase;letter-spacing:1.5px;">'
+        'Relatório Diário de Produção · Simplific</p>'
         f'<p style="margin:6px 0 0;color:#fff;font-size:20px;font-weight:600;">{hoje_str}</p>'
-        f'<p style="margin:4px 0 0;color:#888;font-size:12px;">{rel["total"]} tarefas ativas · Gerado automaticamente</p>'
+        f'<p style="margin:4px 0 0;color:#888;font-size:12px;">'
+        f'{rel["total"]} tarefas ativas · Gerado automaticamente</p>'
         '</div>'
         f'<div style="background:#fff;padding:28px;border-radius:0 0 10px 10px;">{corpo}</div>'
         '</div></body></html>'
@@ -930,7 +977,6 @@ def main():
     print("Extraindo campos...")
     tarefas = [extrair(t, usuarios) for t in raw]
 
-    # fallback: busca via API para tarefas sem projeto identificado
     ids_vistos = set()
     for t in tarefas:
         if t["projeto_nome"]:
@@ -946,15 +992,11 @@ def main():
     if ids_vistos:
         print(f"{len(ids_vistos)} projetos carregados via API (fallback).")
 
-    # exclui tarefas cujo projeto esteja explicitamente encerrado
     tarefas = [t for t in tarefas if not projeto_inativo(t["projeto_status"])]
-
-    # exclui tarefas do projeto template
     tarefas = [
         t for t in tarefas
         if (t["projeto_nome"] or "").strip().lower() != PROJETO_TEMPLATE
     ]
-
     print(f"{len(tarefas)} tarefas após filtros.")
 
     print("Montando relatório...")
