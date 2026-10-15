@@ -796,59 +796,79 @@ def gerar_html(rel):
     else:
         s2_licia = vazio("Nenhuma revisão aguardando Lícia no momento.")
 
-    if rel["aguarda_willian_rev"]:
-        s2_willian = tabela_revisao(rel["aguarda_willian_rev"], "#1e40af", "Willian")
-    else:
-        s2_willian = vazio("Nenhuma correção pendente com Willian no momento.")
+    TIPO_CORR = '<span style="font-size:10px;padding:1px 7px;border-radius:4px;background:#dbeafe;color:#1e40af;font-weight:600;">Correção</span>'
+    TIPO_EXEC = '<span style="font-size:10px;padding:1px 7px;border-radius:4px;background:#e5e7eb;color:#374151;font-weight:600;">Execução</span>'
 
     willian_exec = [t for t in rel["willian"] if t["status"] != "Revisão"]
-    if willian_exec:
-        linhas_we = []
-        for proj, grupo in agrupar_por_projeto(willian_exec):
-            linhas_we.append(header_projeto(proj, 4))
-            for t in grupo:
+    willian_total = len(rel["aguarda_willian_rev"]) + len(willian_exec)
+
+    if willian_total:
+        linhas_w = []
+        NCOLS_W = 5
+
+        corr_grupos = agrupar_por_projeto(rel["aguarda_willian_rev"])
+        exec_grupos = agrupar_por_projeto(willian_exec)
+        proj_ordem = list(dict.fromkeys(
+            [p for p, _ in corr_grupos] + [p for p, _ in exec_grupos]
+        ))
+        corr_map = dict(corr_grupos)
+        exec_map = dict(exec_grupos)
+
+        for proj in proj_ordem:
+            linhas_w.append(header_projeto(proj, NCOLS_W))
+            for t in corr_map.get(proj, []):
+                ri = t["revisao_info"]
+                ultima = parse_d(t["ultima_edicao"])
+                dias_esp = (hoje - ultima).days if ultima else None
+                esp_str = (str(dias_esp) + "d") if dias_esp is not None else "—"
                 prazo_str = fmt_d(t["d_limite_calc"]) if t["d_limite_calc"] else "—"
-                cor_prazo = "#e53e3e" if (t.get("dias_atraso") or 0) > 0 else "#555"
-                atraso_html = (
-                    f'<span style="color:#e53e3e;font-size:11px;"> · {t["dias_atraso"]}d atraso</span>'
-                    if (t.get("dias_atraso") or 0) > 0 else ""
+                flow_html = rev_flow_html(ri["passos"]) if ri.get("passos") else ""
+                sit_html = (
+                    f'<span style="font-size:11px;color:#1e40af;">{ri["label"]}</span>'
+                    + flow_html
                 )
-                linhas_we.append(
+                linhas_w.append(
                     f'<tr>{celula_tarefa(t)}'
-                    f'{td(badge(t["status"]) if t["status"] else "—", nowrap=False)}'
-                    f'{td(prazo_str + atraso_html, cor=cor_prazo, nowrap=False)}'
+                    f'{td(TIPO_CORR, nowrap=False)}'
+                    f'<td style="padding:10px;border-bottom:1px solid #f8f8f8;vertical-align:top;">{sit_html}</td>'
+                    f'{td(esp_str, cor="#888")}'
+                    f'{td(prazo_str)}'
                     f'</tr>'
                 )
-        s2_willian_exec_html = (
-            '<div style="margin-bottom:14px;">'
-            + sub_titulo("Tarefas de Willian para executar", len(willian_exec))
-            + tabela_wrap(linhas_we, ["Tarefa", "Status", "Prazo"])
-            + '</div>'
-        )
+            for t in exec_map.get(proj, []):
+                ultima = parse_d(t["ultima_edicao"])
+                dias_esp = (hoje - ultima).days if ultima else None
+                esp_str = (str(dias_esp) + "d") if dias_esp is not None else "—"
+                cor_prazo = "#e53e3e" if (t.get("dias_atraso") or 0) > 0 else "#555"
+                prazo_str = fmt_d(t["d_limite_calc"]) if t["d_limite_calc"] else "—"
+                sit_html = badge(t["status"]) if t["status"] else "—"
+                linhas_w.append(
+                    f'<tr>{celula_tarefa(t)}'
+                    f'{td(TIPO_EXEC, nowrap=False)}'
+                    f'<td style="padding:10px;border-bottom:1px solid #f8f8f8;vertical-align:top;">{sit_html}</td>'
+                    f'{td(esp_str, cor="#888")}'
+                    f'{td(prazo_str, cor=cor_prazo)}'
+                    f'</tr>'
+                )
+        s2_willian = tabela_wrap(linhas_w, ["Tarefa", "Tipo", "Situação", "Espera", "Prazo"])
     else:
-        s2_willian_exec_html = ""
+        s2_willian = vazio("Nenhuma tarefa pendente com Willian no momento.")
 
     if rel["deps_externas"]:
         linhas = []
         for proj, grupo in agrupar_por_projeto(rel["deps_externas"]):
-            linhas.append(header_projeto(proj, 4))
+            linhas.append(header_projeto(proj, 3))
             for t in grupo:
-                obs_html = (
-                    f'<span style="font-size:12px;color:#888;font-style:italic;">'
-                    f'{t["observacao"]}</span>'
-                )
                 linhas.append(
                     f'<tr>{celula_tarefa(t)}'
-                    f'<td style="padding:10px;border-bottom:1px solid #f8f8f8;vertical-align:top;">'
-                    f'{obs_html}</td>'
                     f'{td(t["responsavel"]["nome"] or "—", cor="#555")}'
                     f'{td(fmt_d(t["d_limite_calc"]) if t["d_limite_calc"] else "—")}'
                     f'</tr>'
                 )
         s2_deps_html = (
             '<div style="margin-bottom:14px;">'
-            + sub_titulo("Dependências externas", len(rel["deps_externas"]))
-            + tabela_wrap(linhas, ["Tarefa", "Observação", "Responsável", "Prazo"])
+            + sub_titulo("Com pendência", len(rel["deps_externas"]))
+            + tabela_wrap(linhas, ["Tarefa", "Responsável", "Prazo"])
             + '</div>'
         )
     else:
@@ -890,9 +910,8 @@ def gerar_html(rel):
         + sub_titulo("Aguardando Lícia", len(rel["aguarda_licia_rev"])) + s2_licia
         + '</div>'
         + '<div style="margin-bottom:14px;">'
-        + sub_titulo("Aguardando Willian", len(rel["aguarda_willian_rev"])) + s2_willian
+        + sub_titulo("Aguardando Willian", willian_total) + s2_willian
         + '</div>'
-        + s2_willian_exec_html
         + s2_deps_html
         + '<div style="margin-bottom:14px;">'
         + sub_titulo("Projetos sem movimentação", len(rel["proj_sem_mov"])) + s2_sem_mov
