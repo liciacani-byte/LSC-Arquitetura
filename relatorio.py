@@ -36,8 +36,6 @@ DIAS_PT   = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
 STATUS_PROJETO_INATIVO = {"finalizado", "cancelado", "arquivado", "concluído", "concluido", "suspenso"}
 PROJETO_TEMPLATE = "projeto base"
 
-# Indicadores de dependência externa — detectados no campo Observação
-KEYWORDS_DEP_EXTERNA = {"cliente", "fornecedor", "prefeitura", "topografia", "laudo", "externo", "terceiro"}
 
 
 def fmt_data_pt(d):
@@ -378,8 +376,7 @@ def montar(tarefas):
             else:
                 aguarda_willian_rev.append(t)
 
-        obs = (t["observacao"] or "").lower()
-        if any(kw in obs for kw in KEYWORDS_DEP_EXTERNA):
+        if t["status"] == "Com Pendência":
             deps_externas.append(t)
 
         if eh_licia:
