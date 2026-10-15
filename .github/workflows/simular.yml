@@ -1,0 +1,25 @@
+name: Simular Prioridades (dry-run)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  simular:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependências
+        run: pip install requests
+
+      - name: Simular seleção de prioridades
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+        run: python simular_prioridades.py
