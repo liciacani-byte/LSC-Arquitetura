@@ -718,7 +718,7 @@ def gerar_html(rel):
 
     prioridades = selecionar_prioridades(rel)
     if prioridades:
-        itens_prio = []
+        linhas_prio = []
         for i, p in enumerate(prioridades, 1):
             pd = p["proj_data"]
             cor_txt, cor_bg, lbl_tipo = TIPO_BADGE.get(p["tipo"], ("#555", "#f0f0f0", p["tipo"]))
@@ -726,28 +726,30 @@ def gerar_html(rel):
             url = rep["url"] if rep else "#"
             sit_linhas = _situacao_linhas_prio(p, pd)
             sit_html = " &nbsp;·&nbsp; ".join(
-                f'<span style="color:#555;">{l}</span>' for l in sit_linhas
+                f'<span style="color:#888;">{l}</span>' for l in sit_linhas
             )
             acao = _proxima_acao_prio(pd)
-            itens_prio.append(
-                f'<div style="display:flex;align-items:flex-start;gap:12px;padding:10px 0;'
-                f'border-bottom:1px solid #f8f8f8;">'
-                f'<span style="min-width:22px;height:22px;background:#1a1a1a;color:#fff;'
-                f'border-radius:50%;display:inline-flex;align-items:center;justify-content:center;'
-                f'font-size:10px;font-weight:700;flex-shrink:0;">{i}</span>'
-                f'<div style="min-width:0;">'
-                f'<div style="margin-bottom:3px;">'
+            linhas_prio.append(
+                f'<tr style="border-bottom:1px solid #f5f5f5;">'
+                f'<td style="width:36px;padding:12px 0;vertical-align:top;'
+                f'font-size:13px;font-weight:600;color:#ccc;letter-spacing:.5px;">{i:02d}</td>'
+                f'<td style="padding:12px 0;vertical-align:top;">'
+                f'<div style="margin-bottom:4px;">'
                 f'<span style="font-size:10px;padding:1px 7px;border-radius:4px;'
                 f'background:{cor_bg};color:{cor_txt};font-weight:600;margin-right:6px;">{lbl_tipo}</span>'
                 f'<a href="{url}" style="color:#1a1a1a;text-decoration:none;'
                 f'font-size:13px;font-weight:600;">{p["projeto"]}</a>'
                 f'</div>'
-                f'<div style="font-size:11px;color:#888;margin-top:2px;">{sit_html}</div>'
+                f'<div style="font-size:11px;margin-top:2px;">{sit_html}</div>'
                 f'<div style="font-size:11px;color:#555;margin-top:4px;">'
                 f'Próxima ação: <strong>{acao}</strong></div>'
-                f'</div></div>'
+                f'</td></tr>'
             )
-        prioridades_html = '<div>' + "".join(itens_prio) + '</div>'
+        prioridades_html = (
+            '<table style="width:100%;border-collapse:collapse;">'
+            + "".join(linhas_prio)
+            + '</table>'
+        )
     else:
         prioridades_html = alerta("✅ Nenhuma prioridade crítica identificada para o próximo dia útil.", "green")
 
