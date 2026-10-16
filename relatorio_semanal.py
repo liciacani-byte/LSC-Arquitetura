@@ -518,6 +518,7 @@ def resultado_html(custo, orcado):
 def avanco_tarefas_html(tarefas_proj, proj_t_cst, proj_t_orc):
     """
     Gera bloco com duas barras horizontais: % tarefas finalizadas vs % orçamento consumido.
+    Layout 100% baseado em tabelas HTML para compatibilidade com Gmail.
     Retorna string vazia se não houver tarefas ou orçamento cadastrado.
     """
     if not tarefas_proj or tarefas_proj["validas"] == 0:
@@ -530,65 +531,100 @@ def avanco_tarefas_html(tarefas_proj, proj_t_cst, proj_t_orc):
     pct_avanco  = finalizadas / validas * 100
     pct_consumo = proj_t_cst / proj_t_orc * 100
     diff        = pct_consumo - pct_avanco
-
     cor_consumo = "#c53030" if pct_consumo > 100 else "#b7791f"
 
-    bar_avanco = (
-        '<div style="margin-bottom:10px;">'
-        '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">'
-        '<span style="font-size:11px;color:#888;">% Tarefas finalizadas</span>'
-        f'<span style="font-size:14px;font-weight:700;color:#2c5282;">{pct_avanco:.0f}%</span>'
-        '</div>'
-        '<div style="width:100%;height:8px;background:#e8e8e8;border-radius:4px;overflow:hidden;">'
-        f'<div style="width:{min(pct_avanco, 100):.1f}%;height:100%;background:#2c5282;border-radius:4px;"></div>'
-        '</div>'
-        f'<div style="font-size:11px;color:#bbb;margin-top:3px;">'
-        f'{finalizadas} finalizada{"s" if finalizadas != 1 else ""} de {validas} válidas</div>'
-        '</div>'
-    )
+    def _barra(label, pct, cor, detalhe):
+        pct_vis  = min(pct, 100.0)
+        w_fill   = max(0, int(round(pct_vis)))
+        w_rest   = 100 - w_fill
 
-    bar_consumo = (
-        '<div style="margin-bottom:10px;">'
-        '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">'
-        '<span style="font-size:11px;color:#888;">% Orçamento consumido</span>'
-        f'<span style="font-size:14px;font-weight:700;color:{cor_consumo};">{pct_consumo:.0f}%</span>'
-        '</div>'
-        '<div style="width:100%;height:8px;background:#e8e8e8;border-radius:4px;overflow:hidden;">'
-        f'<div style="width:{min(pct_consumo, 100):.1f}%;height:100%;background:{cor_consumo};border-radius:4px;"></div>'
-        '</div>'
-        f'<div style="font-size:11px;color:#bbb;margin-top:3px;">'
-        f'{fmt_r(proj_t_cst)} de {fmt_r(proj_t_orc)}</div>'
-        '</div>'
+        # Linha label + percentual (duas colunas via tabela)
+        linha_label = (
+            '<table width="100%" cellspacing="0" cellpadding="0" border="0"'
+            ' style="margin-bottom:4px;">'
+            '<tr>'
+            f'<td style="font-size:11px;color:#888;vertical-align:bottom;">{label}</td>'
+            f'<td align="right" style="font-size:14px;font-weight:700;'
+            f'color:{cor};vertical-align:bottom;white-space:nowrap;">{pct:.0f}%</td>'
+            '</tr>'
+            '</table>'
+        )
+
+        # Barra de progresso via tabela (fill + track)
+        if w_fill <= 0:
+            cells = (
+                '<td width="100%" height="8" bgcolor="#e8e8e8"'
+                ' style="background-color:#e8e8e8;font-size:0;line-height:0;">&nbsp;</td>'
+            )
+        elif w_rest <= 0:
+            cells = (
+                f'<td width="100%" height="8" bgcolor="{cor}"'
+                f' style="background-color:{cor};font-size:0;line-height:0;">&nbsp;</td>'
+            )
+        else:
+            cells = (
+                f'<td width="{w_fill}%" height="8" bgcolor="{cor}"'
+                f' style="background-color:{cor};font-size:0;line-height:0;">&nbsp;</td>'
+                f'<td width="{w_rest}%" height="8" bgcolor="#e8e8e8"'
+                f' style="background-color:#e8e8e8;font-size:0;line-height:0;">&nbsp;</td>'
+            )
+        linha_barra = (
+            '<table width="100%" cellspacing="0" cellpadding="0" border="0"'
+            ' style="border-radius:4px;overflow:hidden;">'
+            f'<tr>{cells}</tr>'
+            '</table>'
+        )
+
+        linha_detalhe = (
+            f'<p style="margin:3px 0 0;font-size:11px;color:#bbb;">{detalhe}</p>'
+        )
+
+        return linha_label + linha_barra + linha_detalhe
+
+    detalhe_avanco  = (
+        f'{finalizadas} finalizada{"s" if finalizadas != 1 else ""} de {validas} válidas'
     )
+    detalhe_consumo = f'{fmt_r(proj_t_cst)} de {fmt_r(proj_t_orc)}'
+
+    bar_avanco  = _barra("Tarefas finalizadas",  pct_avanco,  "#2c5282",   detalhe_avanco)
+    bar_consumo = _barra("Orçamento consumido",  pct_consumo, cor_consumo, detalhe_consumo)
 
     if abs(diff) < 5:
-        diff_html = (
-            '<div style="font-size:11px;color:#276749;background:#f0fff4;'
-            'padding:5px 8px;border-radius:4px;margin-top:4px;">'
-            f'✓ Consumo equilibrado com o avanço ({diff:+.0f} pp)</div>'
-        )
+        diff_bg, diff_cor = "#f0fff4", "#276749"
+        diff_txt = f'✓ Consumo equilibrado com o avanço ({diff:+.0f} pp)'
     elif diff > 0:
-        diff_html = (
-            '<div style="font-size:11px;color:#b7791f;background:#fffbeb;'
-            'padding:5px 8px;border-radius:4px;margin-top:4px;">'
-            f'⚠ Consumo {diff:.0f} pp acima do avanço das tarefas</div>'
-        )
+        diff_bg, diff_cor = "#fffbeb", "#b7791f"
+        diff_txt = f'⚠ Consumo {diff:.0f} pp acima do avanço das tarefas'
     else:
-        diff_html = (
-            '<div style="font-size:11px;color:#276749;background:#f0fff4;'
-            'padding:5px 8px;border-radius:4px;margin-top:4px;">'
-            f'▲ Avanço {abs(diff):.0f} pp acima do consumo de orçamento</div>'
-        )
+        diff_bg, diff_cor = "#f0fff4", "#276749"
+        diff_txt = f'▲ Avanço {abs(diff):.0f} pp acima do consumo de orçamento'
+
+    diff_html = (
+        '<table width="100%" cellspacing="0" cellpadding="0" border="0"'
+        ' style="margin-top:8px;">'
+        '<tr>'
+        f'<td bgcolor="{diff_bg}" style="background-color:{diff_bg};padding:6px 10px;'
+        f'border-radius:4px;font-size:11px;font-weight:600;color:{diff_cor};">'
+        f'{diff_txt}'
+        '</td>'
+        '</tr>'
+        '</table>'
+    )
 
     return (
-        '<div style="margin-top:12px;padding:12px 14px;background:#fafafa;'
-        'border-radius:6px;border:1px solid #f0f0f0;">'
-        '<p style="margin:0 0 10px;font-size:10px;font-weight:700;text-transform:uppercase;'
-        'letter-spacing:1px;color:#aaa;">Avanço das Tarefas</p>'
-        + bar_avanco
-        + bar_consumo
+        '<table width="100%" cellspacing="0" cellpadding="0" border="0"'
+        ' style="margin-top:12px;background-color:#fafafa;'
+        'border:1px solid #f0f0f0;border-radius:6px;">'
+        '<tr>'
+        '<td style="padding:12px 14px;">'
+        '<p style="margin:0 0 10px;font-size:10px;font-weight:700;'
+        'text-transform:uppercase;letter-spacing:1px;color:#aaa;">Avanço das Tarefas</p>'
+        + '<div style="margin-bottom:10px;">' + bar_avanco  + '</div>'
+        + '<div style="margin-bottom:4px;">'  + bar_consumo + '</div>'
         + diff_html
-        + '</div>'
+        + '</td>'
+        '</tr>'
+        '</table>'
     )
 
 
