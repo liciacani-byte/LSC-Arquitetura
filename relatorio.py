@@ -988,13 +988,14 @@ def gerar_html(rel):
         n_vence7_p = sum(1 for t in vencem7_all if t["id"] in ids_pessoa)
 
         def linha_stat(label, valor, cor="#1a1a1a", negrito=False):
-            peso = "font-weight:600;" if negrito else ""
+            peso = "font-weight:600;" if negrito else "font-weight:400;"
             return (
-                f'<div style="display:flex;justify-content:space-between;padding:7px 0;'
-                f'border-bottom:1px solid #f8f8f8;">'
-                f'<span style="font-size:13px;color:#555;">{label}</span>'
-                f'<span style="font-size:13px;color:{cor};{peso}">{valor}</span>'
-                f'</div>'
+                f'<tr style="border-bottom:1px solid #f8f8f8;">'
+                f'<td style="padding:8px 12px 8px 0;font-size:13px;color:#888;'
+                f'vertical-align:middle;">{label}</td>'
+                f'<td style="padding:8px 0;font-size:13px;color:{cor};{peso}'
+                f'text-align:right;white-space:nowrap;vertical-align:middle;">{valor}</td>'
+                f'</tr>'
             )
 
         alertas_p = []
@@ -1006,25 +1007,28 @@ def gerar_html(rel):
             f'Carga controlada — {n_total_p} tarefa(s) ativa(s).', "green"
         )
 
-        return (
-            '<div style="flex:1;min-width:260px;border:1px solid #eee;border-radius:8px;'
-            'padding:16px 18px;margin-bottom:14px;">'
-            f'<p style="margin:0 0 12px;font-size:13px;font-weight:700;color:#1a1a1a;">{nome}</p>'
-            + linha_stat("Total de tarefas", n_total_p)
+        linhas = (
+            linha_stat("Total de tarefas", n_total_p)
             + linha_stat("Em execução", n_exec)
             + linha_stat(
                 "Revisões aguardando ação", n_rev_acao,
-                cor="#c05621" if n_rev_acao > 0 else "#1a1a1a",
+                cor="#c05621" if n_rev_acao > 0 else "#555",
                 negrito=n_rev_acao > 0,
             )
             + linha_stat(
                 "Tarefas atrasadas", n_atras_p,
-                cor="#e53e3e" if n_atras_p > 0 else "#1a1a1a",
+                cor="#e53e3e" if n_atras_p > 0 else "#555",
                 negrito=n_atras_p > 0,
             )
             + linha_stat("Entregas nos próximos 7 dias", n_vence7_p)
-            + f'<div style="margin-top:12px;">{alerta_html}</div>'
-            + '</div>'
+        )
+        return (
+            '<td style="width:50%;padding:0 8px 14px 0;vertical-align:top;">'
+            '<div style="border:1px solid #eee;border-radius:8px;padding:16px 18px;">'
+            f'<p style="margin:0 0 12px;font-size:13px;font-weight:700;color:#1a1a1a;">{nome}</p>'
+            f'<table style="width:100%;border-collapse:collapse;">{linhas}</table>'
+            f'<div style="margin-top:12px;">{alerta_html}</div>'
+            '</div></td>'
         )
 
     s4_licia   = equipe_card("Lícia",   rel["licia"],   rel["aguarda_licia_rev"],   rel["vencem7"])
@@ -1033,9 +1037,9 @@ def gerar_html(rel):
     s4 = (
         '<div style="margin-bottom:26px;">'
         + secao_titulo("Seção 4 — Equipe e Produtividade")
-        + '<div style="display:flex;gap:16px;flex-wrap:wrap;">'
+        + '<table style="width:100%;border-collapse:collapse;"><tr>'
         + s4_licia + s4_willian
-        + '</div></div>'
+        + '</tr></table></div>'
     )
 
     # ── Montagem final ──────────────────────────────────────────────────────────
