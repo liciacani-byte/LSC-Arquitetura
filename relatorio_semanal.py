@@ -470,31 +470,28 @@ def gerar_html(projetos, seg, sex, orcamentos):
     periodo  = f"{data_ini} a {data_fim}"
 
     # ── totais consolidados para os cards ──────────────────────────────────────
-    sem_min = sem_cst = tot_min = 0.0
+    sem_min = sem_cst = 0.0
     for proj in projetos.values():
         for p in PESSOAS:
             sem_min += proj["semana"].get(p, _z())["min"]
             sem_cst += proj["semana"].get(p, _z())["custo"]
-        t_m, t_c = totais_projeto(proj)
-        tot_min += t_m
 
-    n_total  = len(projetos)
     n_semana = sum(
         1 for p in projetos.values()
         if any(p["semana"].get(pe, _z())["min"] > 0 for pe in PESSOAS)
     )
+    n_total = len(projetos)
 
     cards_html = (
         '<div style="display:flex;gap:10px;margin-bottom:28px;flex-wrap:wrap;">'
-        + card("Horas na semana",  fmt_h(sem_min), "#2c5282", "#2c5282", "#ebf4ff")
-        + card("Custo semana",     fmt_r(sem_cst), "#276749", "#276749", "#f0fff4")
-        + card("Horas acumuladas", fmt_h(tot_min), "#92400e", "#92400e", "#fffbeb")
-        + card("Projetos ativos",  f"{n_semana} / {n_total}", "#555", "#1a1a1a", "#f7f7f7")
+        + card("Horas registradas na semana", fmt_h(sem_min), "#2c5282", "#2c5282", "#ebf4ff")
+        + card("Custo da semana",             fmt_r(sem_cst), "#276749", "#276749", "#f0fff4")
+        + card("Projetos trabalhados",        str(n_semana),  "#555",    "#1a1a1a", "#f7f7f7")
         + '</div>'
     )
 
-    # ── Seção 1: Horas na Semana ───────────────────────────────────────────────
-    thead_sem = th("Projeto", align="left") + th("Tempo") + th("Custo semana")
+    # ── Seção 1: Horas Registradas na Semana ──────────────────────────────────
+    thead_sem = th("Projeto", align="left") + th("Tempo") + th("% do total") + th("Custo")
 
     def pessoa_tabela_semana(pessoa):
         linhas = [
@@ -513,17 +510,21 @@ def gerar_html(projetos, seg, sex, orcamentos):
         for nome, d in linhas:
             t_min += d["min"]
             t_cst += d["custo"]
+            pct = f"{d['min'] / sem_min * 100:.0f}%" if sem_min > 0 else "—"
             tbody += (
                 "<tr>"
                 + td(nome)
                 + td(fmt_h(d["min"]), align="right", cor="#1a1a1a")
+                + td(pct, align="right", cor="#aaa")
                 + td(fmt_r(d["custo"]), align="right", cor="#276749")
                 + "</tr>"
             )
+        pct_total = f"{t_min / sem_min * 100:.0f}%" if sem_min > 0 else "—"
         tbody += (
             "<tr>"
             + td("Total", bold=True, bg="#fafafa")
             + td(fmt_h(t_min), bold=True, align="right", bg="#fafafa")
+            + td(pct_total, bold=True, align="right", bg="#fafafa", cor="#555")
             + td(fmt_r(t_cst), bold=True, align="right", cor="#276749", bg="#fafafa")
             + "</tr>"
         )
@@ -534,7 +535,7 @@ def gerar_html(projetos, seg, sex, orcamentos):
 
     s1 = (
         '<div style="margin-bottom:26px;">'
-        + sec_title("Seção 1 — Horas na Semana")
+        + sec_title("Seção 1 — Horas Registradas na Semana")
         + s1_licia
         + s1_willian
         + '</div>'
