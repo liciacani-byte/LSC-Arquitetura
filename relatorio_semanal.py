@@ -24,6 +24,7 @@ EMAIL_DESTINO      = os.environ["EMAIL_DESTINO"]
 
 HORAS_DB_ID     = "137fab6becce8004bbcde641510baffd"
 PROPOSTAS_DB_ID = "2f6fab6becce805f9038da208103c068"
+TAREFAS_DB_ID   = "29bfab6becce8168830ae194246e85cb"
 
 HEADERS = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -157,6 +158,53 @@ def buscar_orcamentos():
             result[pid] = entry
 
     print(f"Orçamentos carregados: {len(result)} projetos.")
+    return result
+
+
+def buscar_tarefas_por_projeto():
+    """
+    Consulta a base de Tarefas e retorna contagens por projeto:
+      {project_id_sem_hifens: {"validas": N, "finalizadas": N}}
+    Tarefas válidas: todos os status exceto "Cancelado".
+    Finalizadas: apenas status == "Finalizado".
+    """
+    rows, payload = [], {"page_size": 100}
+    while True:
+        data = api_post(f"databases/{TAREFAS_DB_ID}/query", payload)
+        rows.extend(data.get("results", []))
+        if not data.get("has_more"):
+            break
+        payload["start_cursor"] = data["next_cursor"]
+
+    result = {}
+    for row in rows:
+        props = row.get("properties", {})
+        rel = props.get("Projeto", {})
+        if rel.get("type") != "relation":
+            continue
+        rels = rel.get("relation", [])
+        if not rels:
+            continue
+        pid = rels[0].get("id", "").replace("-", "")
+        if not pid:
+            continue
+
+        status_v = props.get("Status da Tarefa", {})
+        status = ""
+        if status_v.get("type") == "status" and status_v.get("status"):
+            status = status_v["status"].get("name", "")
+
+        if status.lower() == "cancelado":
+            continue
+
+        if pid not in result:
+            result[pid] = {"validas": 0, "finalizadas": 0}
+        result[pid]["validas"] += 1
+        if status == "Finalizado":
+            result[pid]["finalizadas"] += 1
+
+    total_validas = sum(v["validas"] for v in result.values())
+    print(f"Tarefas carregadas: {total_validas} válidas em {len(result)} projetos.")
     return result
 
 
@@ -467,9 +515,86 @@ def resultado_html(custo, orcado):
         return td(f"▼ {fmt_r(abs(saldo))}", align="right", cor="#c53030")
 
 
+def avanco_tarefas_html(tarefas_proj, proj_t_cst, proj_t_orc):
+    """
+    Gera bloco com duas barras horizontais: % tarefas finalizadas vs % orçamento consumido.
+    Retorna string vazia se não houver tarefas ou orçamento cadastrado.
+    """
+    if not tarefas_proj or tarefas_proj["validas"] == 0:
+        return ""
+    if proj_t_orc <= 0:
+        return ""
+
+    validas     = tarefas_proj["validas"]
+    finalizadas = tarefas_proj["finalizadas"]
+    pct_avanco  = finalizadas / validas * 100
+    pct_consumo = proj_t_cst / proj_t_orc * 100
+    diff        = pct_consumo - pct_avanco
+
+    cor_consumo = "#c53030" if pct_consumo > 100 else "#b7791f"
+
+    bar_avanco = (
+        '<div style="margin-bottom:10px;">'
+        '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">'
+        '<span style="font-size:11px;color:#888;">% Tarefas finalizadas</span>'
+        f'<span style="font-size:14px;font-weight:700;color:#2c5282;">{pct_avanco:.0f}%</span>'
+        '</div>'
+        '<div style="width:100%;height:8px;background:#e8e8e8;border-radius:4px;overflow:hidden;">'
+        f'<div style="width:{min(pct_avanco, 100):.1f}%;height:100%;background:#2c5282;border-radius:4px;"></div>'
+        '</div>'
+        f'<div style="font-size:11px;color:#bbb;margin-top:3px;">'
+        f'{finalizadas} finalizada{"s" if finalizadas != 1 else ""} de {validas} válidas</div>'
+        '</div>'
+    )
+
+    bar_consumo = (
+        '<div style="margin-bottom:10px;">'
+        '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">'
+        '<span style="font-size:11px;color:#888;">% Orçamento consumido</span>'
+        f'<span style="font-size:14px;font-weight:700;color:{cor_consumo};">{pct_consumo:.0f}%</span>'
+        '</div>'
+        '<div style="width:100%;height:8px;background:#e8e8e8;border-radius:4px;overflow:hidden;">'
+        f'<div style="width:{min(pct_consumo, 100):.1f}%;height:100%;background:{cor_consumo};border-radius:4px;"></div>'
+        '</div>'
+        f'<div style="font-size:11px;color:#bbb;margin-top:3px;">'
+        f'{fmt_r(proj_t_cst)} de {fmt_r(proj_t_orc)}</div>'
+        '</div>'
+    )
+
+    if abs(diff) < 5:
+        diff_html = (
+            '<div style="font-size:11px;color:#276749;background:#f0fff4;'
+            'padding:5px 8px;border-radius:4px;margin-top:4px;">'
+            f'✓ Consumo equilibrado com o avanço ({diff:+.0f} pp)</div>'
+        )
+    elif diff > 0:
+        diff_html = (
+            '<div style="font-size:11px;color:#b7791f;background:#fffbeb;'
+            'padding:5px 8px;border-radius:4px;margin-top:4px;">'
+            f'⚠ Consumo {diff:.0f} pp acima do avanço das tarefas</div>'
+        )
+    else:
+        diff_html = (
+            '<div style="font-size:11px;color:#276749;background:#f0fff4;'
+            'padding:5px 8px;border-radius:4px;margin-top:4px;">'
+            f'▲ Avanço {abs(diff):.0f} pp acima do consumo de orçamento</div>'
+        )
+
+    return (
+        '<div style="margin-top:12px;padding:12px 14px;background:#fafafa;'
+        'border-radius:6px;border:1px solid #f0f0f0;">'
+        '<p style="margin:0 0 10px;font-size:10px;font-weight:700;text-transform:uppercase;'
+        'letter-spacing:1px;color:#aaa;">Avanço das Tarefas</p>'
+        + bar_avanco
+        + bar_consumo
+        + diff_html
+        + '</div>'
+    )
+
+
 # ── Geração do HTML ──────────────────────────────────────────────────────────────
 
-def gerar_html(projetos, seg, sex, orcamentos):
+def gerar_html(projetos, seg, sex, orcamentos, tarefas=None):
     data_ini = f"{seg.day:02d}"
     data_fim = f"{sex.day:02d}/{MESES_ABREV[sex.month - 1]}/{sex.year}"
     periodo  = f"{data_ini} a {data_fim}"
@@ -641,10 +766,14 @@ def gerar_html(projetos, seg, sex, orcamentos):
             + "</tr>"
         )
 
+        tarefas_proj = (tarefas or {}).get(pid.replace("-", ""))
+        avanco_html  = avanco_tarefas_html(tarefas_proj, proj_t_cst, proj_t_orc)
+
         projetos_html += (
             '<div style="margin-bottom:24px;">'
             + proj_label(proj["nome"], proj.get("status_projeto"))
             + table_wrap(thead_proj, tbody)
+            + avanco_html
             + '</div>'
         )
 
@@ -816,6 +945,13 @@ def main():
         print(f"⚠ Orçamentos indisponíveis ({e}). Verifique a conexão da integração com '2026 | Propostas Comerciais'.")
         orcamentos = {}
 
+    print("Buscando tarefas por projeto...")
+    try:
+        tarefas = buscar_tarefas_por_projeto()
+    except Exception as e:
+        print(f"⚠ Tarefas indisponíveis ({e}). Barras de avanço omitidas.")
+        tarefas = {}
+
     print("\n--- DEBUG CUSTO (primeiros 5 registros com projeto) ---")
     debug_custo(raw)
     print("--- FIM DEBUG ---\n")
@@ -831,7 +967,7 @@ def main():
     data_fim = f"{sex.day:02d}/{MESES_ABREV[sex.month - 1]}/{sex.year}"
     assunto  = f"Relatório Semanal de Produtividade e Custos | {data_ini} a {data_fim}"
 
-    html  = gerar_html(projetos, seg, sex, orcamentos)
+    html  = gerar_html(projetos, seg, sex, orcamentos, tarefas)
     texto = gerar_texto(projetos, seg, sex, orcamentos)
     print(texto)
 
