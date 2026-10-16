@@ -36,6 +36,11 @@ MESES_ABREV = ["jan","fev","mar","abr","mai","jun",
 
 STATUS_INATIVO = {"finalizado","cancelado","arquivado","concluído","concluido","suspenso"}
 
+LSC_ADMIN_NOME = "lsc arquitetura"
+
+def eh_lsc_arquitetura(nome):
+    return (nome or "").strip().lower() == LSC_ADMIN_NOME
+
 PESSOAS = ["Lícia", "Willian"]
 
 ETAPAS_BILLABLE = [
@@ -542,7 +547,17 @@ def gerar_html(projetos, seg, sex, orcamentos):
     )
 
     # ── Seção 2: Custo por Projeto ─────────────────────────────────────────────
-    # Cabeçalho: Responsável | Tempo | Custo | Orçado | Resultado
+    # Separa LSC Arquitetura (gestão interna) dos projetos de clientes
+    proj_lsc      = {pid: p for pid, p in projetos.items()
+                     if eh_lsc_arquitetura(p.get("nome"))}
+    proj_clientes = {pid: p for pid, p in projetos.items()
+                     if not eh_lsc_arquitetura(p.get("nome"))
+                     and eh_ativo_secao2(p.get("status_projeto"))}
+    if not proj_clientes:
+        proj_clientes = {pid: p for pid, p in projetos.items()
+                         if not eh_lsc_arquitetura(p.get("nome"))}
+
+    # Cabeçalho 5 colunas para projetos de clientes
     thead_proj = (
         th("Responsável", align="left")
         + th("Tempo")
@@ -551,29 +566,17 @@ def gerar_html(projetos, seg, sex, orcamentos):
         + th("Resultado")
     )
 
-    proj_s2 = {
-        pid: p for pid, p in projetos.items()
-        if eh_ativo_secao2(p.get("status_projeto"))
-    }
-    if not proj_s2:
-        proj_s2 = projetos
-
-    proj_s2_ordenados = sorted(proj_s2.items(), key=lambda x: x[1]["nome"])
-
     projetos_html = ""
-    for pid, proj in proj_s2_ordenados:
+    for pid, proj in sorted(proj_clientes.items(), key=lambda x: x[1]["nome"]):
         orc = orcamentos.get(pid.replace("-", ""), {})
         tbody = ""
 
-        # I, II, III sempre na ordem fixa; exibe só se tiver horas OU orçado
         etapas_com_horas = set(proj["etapas"].keys())
         etapas_billable_presentes = [
             e for e in ETAPAS_BILLABLE
             if e in etapas_com_horas or orc.get(e, 0) > 0
         ]
-        # Outras etapas (Gestão, Simplific…) só aparecem se tiverem horas
         etapas_outras = sorted(e for e in etapas_com_horas if e not in ETAPAS_BILLABLE)
-
         etapas_para_mostrar = etapas_billable_presentes + etapas_outras
 
         proj_t_min = proj_t_cst = proj_t_orc = 0.0
@@ -583,7 +586,6 @@ def gerar_html(projetos, seg, sex, orcamentos):
             etapa_orc   = orc.get(etapa, 0.0) if etapa in ETAPAS_BILLABLE else 0.0
             ep_dados    = proj["etapas"].get(etapa, {})
 
-            # Linha de grupo: nome da etapa
             tbody += (
                 f'<tr><td colspan="5" style="padding:8px 12px 4px;font-size:10px;'
                 f'font-weight:700;text-transform:uppercase;letter-spacing:.5px;'
@@ -601,12 +603,11 @@ def gerar_html(projetos, seg, sex, orcamentos):
                     + td(pessoa, cor="#555")
                     + td(fmt_h(d["min"]), align="right")
                     + td(fmt_r(d["custo"]) if d["custo"] > 0 else "—", align="right", cor="#555")
-                    + td("", align="right")  # orçado só no total da etapa
-                    + td("", align="right")  # resultado só no total da etapa
+                    + td("", align="right")
+                    + td("", align="right")
                     + "</tr>"
                 )
 
-            # Total da etapa
             proj_t_min += ep_t_min
             proj_t_cst += ep_t_cst
             if etapa in ETAPAS_BILLABLE:
@@ -625,7 +626,6 @@ def gerar_html(projetos, seg, sex, orcamentos):
                 tbody += f'<td style="{_TD}text-align:right;background:#f5f5f5;color:{cor_r};font-weight:600;">{sinal} {fmt_r(abs(saldo))}</td>'
             tbody += "</tr>"
 
-        # Total do projeto
         tot_saldo = proj_t_orc - proj_t_cst
         cor_tot   = "#276749" if tot_saldo >= 0 else "#c53030"
         sinal_tot = "▲" if tot_saldo >= 0 else "▼"
@@ -648,10 +648,54 @@ def gerar_html(projetos, seg, sex, orcamentos):
             + '</div>'
         )
 
+    # ── Bloco LSC Arquitetura (gestão interna) — sem etapas, sem orçado ────────
+    thead_lsc = th("Responsável", align="left") + th("Tempo") + th("Custo")
+    lsc_html  = ""
+    for pid, proj in proj_lsc.items():
+        tbody  = ""
+        t_min  = t_cst = 0.0
+        for pessoa in PESSOAS:
+            p_min = p_cst = 0.0
+            for ep in proj["etapas"].values():
+                p_min += ep.get(pessoa, _z())["min"]
+                p_cst += ep.get(pessoa, _z())["custo"]
+            t_min += p_min
+            t_cst += p_cst
+            tbody += (
+                "<tr>"
+                + td(pessoa, cor="#555")
+                + td(fmt_h(p_min), align="right")
+                + td(fmt_r(p_cst) if p_cst > 0 else "—", align="right", cor="#555")
+                + "</tr>"
+            )
+        tbody += (
+            "<tr>"
+            + td("Total", bold=True, bg="#1a1a1a", cor="#fff")
+            + td(fmt_h(t_min), bold=True, align="right", bg="#1a1a1a", cor="#fff")
+            + td(fmt_r(t_cst), bold=True, align="right", bg="#1a1a1a", cor="#fff")
+            + "</tr>"
+        )
+        lsc_html += (
+            '<div style="margin-bottom:8px;">'
+            + proj_label(proj["nome"], "Gestão interna")
+            + table_wrap(thead_lsc, tbody)
+            + '</div>'
+        )
+
+    lsc_bloco = ""
+    if lsc_html:
+        lsc_bloco = (
+            '<div style="margin-top:20px;">'
+            + sec_title("Custos Administrativos")
+            + lsc_html
+            + '</div>'
+        )
+
     s2 = (
         '<div style="margin-bottom:26px;">'
-        + sec_title(f"Seção 2 — Custo por Projeto ({len(proj_s2)} projetos ativos)")
+        + sec_title(f"Seção 2 — Custo por Projeto ({len(proj_clientes)} projetos ativos)")
         + projetos_html
+        + lsc_bloco
         + '</div>'
     )
 
