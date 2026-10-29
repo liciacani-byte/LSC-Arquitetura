@@ -625,9 +625,9 @@ def contador(n):
             f'border-radius:99px;font-weight:500;margin-left:6px;">{n}</span>')
 
 
-def secao_titulo(numero, secao, total):
+def secao_titulo(numero, secao):
     return (f'<p style="margin:0 0 4px;font-size:11px;font-weight:700;text-transform:uppercase;'
-            f'letter-spacing:1.5px;color:#888;">Seção {numero} — {secao}{contador(total) if total else ""}</p>'
+            f'letter-spacing:1.5px;color:#888;">Seção {numero} — {secao}</p>'
             f'<p style="margin:0 0 14px;font-size:12px;color:#aaa;padding-bottom:8px;'
             f'border-bottom:1px solid #f0f0f0;">{DESCRICAO_SECAO[secao]}</p>')
 
@@ -636,23 +636,20 @@ def divider():
     return '<hr style="border:none;border-top:1px solid #f0f0f0;margin:26px 0;">'
 
 
-def celula_media(st, entregas):
+def celula_media(st):
     if not st:
         return f'<td style="{TD}text-align:right;color:#ddd;white-space:nowrap;">—</td>'
-    base = (f'<div style="font-size:10px;color:#aaa;margin-top:2px;">em {st["n"]}</div>'
-            if st["n"] != entregas else "")
     return (f'<td style="{TD}text-align:right;white-space:nowrap;font-weight:600;color:#1a1a1a;">'
-            f'{horas(st["media"])}{base}</td>')
+            f'{horas(st["media"])}</td>')
 
 
 def linha_html(rotulo, dados, pessoas, fora=False, recuo=False):
-    n = dados["entregas"] if dados else 0
-    cor = "#bbb" if not n else ("#888" if fora else "#1a1a1a")
-    marca = f' <span style="font-size:11px;color:#bbb;">· genérica</span>' if fora and n else ""
-    celulas = "".join(celula_media((dados or {}).get(p), n) for p in pessoas)
+    tem_dados = bool(dados and dados.get("entregas"))
+    cor = "#bbb" if not tem_dados else ("#888" if fora else "#1a1a1a")
+    marca = f' <span style="font-size:11px;color:#bbb;">· genérica</span>' if fora and tem_dados else ""
+    celulas = "".join(celula_media((dados or {}).get(p)) for p in pessoas)
     return (f'<tr><td style="{TD}padding-left:{22 if recuo else 10}px;color:{cor};">{rotulo}{marca}</td>'
-            f'<td style="{TD}text-align:center;color:{"#555" if n else "#ddd"};white-space:nowrap;">'
-            f'{n or "—"}</td>{celulas}</tr>')
+            f'{celulas}</tr>')
 
 
 def header_grupo(texto, ncols, discreto=False):
@@ -663,8 +660,7 @@ def header_grupo(texto, ncols, discreto=False):
 
 def tabela_secao(numero, secao, stats_secao, pessoas):
     linhas = linhas_secao(secao, stats_secao)
-    total = sum(dados["entregas"] for _, _, dados, _ in linhas if dados)
-    html = [secao_titulo(numero, secao, total)]
+    html = [secao_titulo(numero, secao)]
     if not linhas:
         html.append('<p style="color:#bbb;font-size:13px;padding:8px 0;font-style:italic;">'
                     'Ainda não há entregas concluídas.</p>')
@@ -672,11 +668,10 @@ def tabela_secao(numero, secao, stats_secao, pessoas):
 
     th = ('text-align:{a};font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:#aaa;'
           'padding:6px 10px;border-bottom:1px solid #f0f0f0;font-weight:500;')
-    cab = (f'<th style="{th.format(a="left")}">Atividade</th><th style="{th.format(a="center")}width:70px;">'
-           f'Entregas</th>'
+    cab = (f'<th style="{th.format(a="left")}">Atividade</th>'
            + "".join(f'<th style="{th.format(a="right")}width:90px;">{etiqueta(p, *COR_PESSOA[p])}</th>'
                      for p in pessoas))
-    ncols = 2 + len(pessoas)
+    ncols = 1 + len(pessoas)
     corpo = []
     ambiente_atual, divisa = object(), False
     for ambiente, item, dados, fora in linhas:
@@ -749,8 +744,7 @@ def montar_html(ate_ano, ate_mes, stats, sessoes, alertas):
     titulo = f"Referência de horas por atividade — até {MESES[ate_mes - 1]} de {ate_ano}"
 
     corpo = [f'<p style="margin:0 0 24px;font-size:12px;color:#888;line-height:1.6;">Média geral acumulada de horas '
-             f'por entrega. Cada média considera só as entregas daquela pessoa — “em N” aparece quando foram '
-             f'menos que o total da linha.</p>']
+             f'por entrega. Cada média considera só as entregas daquela pessoa; “—” = sem entregas.</p>']
     for numero, secao in enumerate(SECOES, start=1):
         if numero > 1:
             corpo.append(divider())
