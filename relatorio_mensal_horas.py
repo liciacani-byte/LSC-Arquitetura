@@ -99,9 +99,10 @@ REVISAO_3D = "Revisão de 3D"
 SEM_AMBIENTE_3D = "3D sem ambiente informado"
 
 ESTRUTURA = {
-    GERAL: ["Reunião de Briefing", LEVANTAMENTO],
-    ARQ: [PLANTA_AMBIENTADA, REUNIAO, REVISAO, "Detalhamento", CORRECAO, "Compatibilização com Estrutural"],
-    EXE: [PLANTA_AMBIENTADA, REUNIAO, "Planta de Reforma", "Planta de Pontos",
+    # Reunião = todas as reuniões, de qualquer etapa; a média é por reunião.
+    GERAL: [REUNIAO, LEVANTAMENTO],
+    ARQ: [PLANTA_AMBIENTADA, REVISAO, "Detalhamento", CORRECAO, "Compatibilização com Estrutural"],
+    EXE: [PLANTA_AMBIENTADA, "Planta de Reforma", "Planta de Pontos",
           "Planta de Iluminação", "Planta de Gesso", "Paginação de Piso", "Detalhamento de Portas",
           "Detalhamento de Vidros", "Detalhamento de Cortinas", "Muro e Calçada",
           "Memorial de Iluminação e Pintura", CORRECAO],
@@ -121,7 +122,7 @@ SEM_AMBIENTE = "Ambiente não informado"
 SEM_TIPO_AMBIENTE = "Detalhamento sem tipo (obra ou marcenaria)"
 TODA_ETAPA = "Toda a etapa"
 # Itens de Interiores que valem para a etapa toda (não por ambiente), nesta ordem.
-TODA_ETAPA_ITENS = ["Reunião", "Apresentação / ambientação", "Memoriais", CORRECAO]
+TODA_ETAPA_ITENS = ["Apresentação / ambientação", "Memoriais", CORRECAO]
 # Itens de Interiores que não aparecem no relatório.
 OCULTOS_INTERIORES = {"Cortinas"}
 # Ambientes que normalmente não têm obra: detalhamento sem tipo conta como marcenaria.
@@ -234,9 +235,10 @@ def classificar(etapa, atividade, descricao):
 
 
 def classificar_texto(secao, t):
-    # Geral e 3D: valem para qualquer etapa.
-    if tem(r"briefing", t):
-        return GERAL, None, "Reunião de Briefing"
+    # Geral e 3D: valem para qualquer etapa. Toda reunião (briefing, apresentação,
+    # entrega...) vai para a linha Reunião da seção Geral.
+    if tem(r"briefing|reuniao", t):
+        return GERAL, None, REUNIAO
     if tem(r"levantamento|\bld\b|conferir medida|medicao", t):
         return GERAL, None, LEVANTAMENTO
     if tem(r"\b3d\b|render|modelagem", t):
@@ -248,9 +250,9 @@ def classificar_texto(secao, t):
     if tem(r"compatibiliz", t):
         return secao, None, "Compatibilização com Estrutural" if secao == ARQ else FORA_ESTRUTURA["compatibilizacao"]
 
-    # Reuniões, apresentações e entregas (Arquitetônico e Executivo) ficam todas em "Reunião".
-    if tem(r"reuniao|apresentac|entrega|termo|\bata\b", t):
-        return secao, None, REUNIAO
+    # Apresentações e entregas (Arquitetônico e Executivo) também são reuniões.
+    if tem(r"apresentac|entrega|termo|\bata\b", t):
+        return GERAL, None, REUNIAO
 
     # Retrabalho: correção é diferente de revisão/ajuste da ambientação.
     if tem(r"correc", t):
@@ -324,8 +326,8 @@ def classificar_interiores(t):
         item = "Detalhamento de obra"
     elif tem(r"criac|ambienta|apresentac", t):
         return INT, None, FORA_ESTRUTURA["apresentacao"]
-    elif tem(r"reuniao|entrega|termo", t):
-        return INT, None, FORA_ESTRUTURA["reuniao"]
+    elif tem(r"entrega|termo", t):
+        return GERAL, None, REUNIAO
     elif tem(r"memoria", t):
         return INT, None, FORA_ESTRUTURA["memoriais"]
     elif tem(r"cortina", t):
@@ -552,6 +554,8 @@ def entregas_concluidas(sessoes, corte):
         if not s["projeto"] or not s["classe"]:
             continue
         secao, ambiente, item = s["classe"]
+        if secao == GERAL and item == REUNIAO:
+            ambiente = s["url"]  # cada reunião é uma entrega: a média é por reunião
         g = grupos[(s["projeto"], secao, ambiente, item, s["pessoa"])]
         g["min"] += s["min"]
         if s["custo"] is None:
@@ -566,9 +570,10 @@ def entregas_concluidas(sessoes, corte):
     concluidas = {}
     for (projeto, secao, ambiente, item, pessoa), g in grupos.items():
         info = secao_info[(projeto, secao)]
-        if info["status"] in STATUS_PROJETO_CANCELADO:
+        reuniao = secao == GERAL and item == REUNIAO  # reunião já está concluída quando acontece
+        if info["status"] in STATUS_PROJETO_CANCELADO and not reuniao:
             continue
-        if info["status"] in STATUS_PROJETO_CONCLUIDO or info["ultimo"] <= limite:
+        if reuniao or info["status"] in STATUS_PROJETO_CONCLUIDO or info["ultimo"] <= limite:
             concluidas[(projeto, secao, ambiente, item, pessoa)] = {
                 "min": g["min"], "custo": None if g["sem_custo"] else g["custo"]}
     return concluidas
@@ -585,8 +590,8 @@ def calcular(entregas):
     projetos = defaultdict(set)
     for (projeto, secao, ambiente, item, pessoa), e in entregas.items():
         # Na linha do relatório, os quartos viram "Quarto" e os banheiros "Banheiro"
-        # (no 3D o ambiente só serve para separar as entregas). Cada um segue sendo uma entrega.
-        linha = None if secao == TRES_D else AGRUPAR_AMBIENTE.get(ambiente, ambiente)
+        # (no 3D e nas reuniões o ambiente só serve para separar as entregas). Cada um segue sendo uma entrega.
+        linha = None if secao in (TRES_D, GERAL) else AGRUPAR_AMBIENTE.get(ambiente, ambiente)
         minutos[(secao, linha, item, pessoa)].append(e["min"])
         custos[(secao, linha, item, pessoa)].append(e["custo"])
         projetos[(secao, linha, item)].add((projeto, ambiente))
