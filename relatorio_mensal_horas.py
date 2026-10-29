@@ -121,7 +121,7 @@ SEM_TIPO_AMBIENTE = "Detalhamento sem tipo (obra ou marcenaria)"
 TODA_ETAPA = "Toda a etapa"
 # Ambientes que normalmente não têm obra: detalhamento sem tipo conta como marcenaria.
 SO_MARCENARIA = {"Closet", "Circulação", "Depósito", "Despensa", "Sala de Jantar", "Sala de TV / Estar",
-                 "Outras salas"}
+                 "Outras salas", "Brinquedoteca"}
 
 # Ambientes reconhecidos na Descrição (primeiro que casar vence; padrões sem acento).
 AMBIENTES = [
