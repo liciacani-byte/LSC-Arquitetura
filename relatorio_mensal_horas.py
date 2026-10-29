@@ -77,11 +77,11 @@ ETAPAS = {
 # ---------------------------------------------------------------- estrutura do relatório
 
 # Itens fixos de cada seção, na ordem em que aparecem no e-mail.
-PLANTA_AMBIENTADA = "Desenvolvimento da Planta Baixa Ambientada"
-REUNIAO_AMBIENTACAO = "Reunião para apresentação da ambientação + Ata"
+PLANTA_AMBIENTADA = "Planta Baixa Ambientada"
+REUNIAO = "Reunião"
 REVISAO = "Revisão e Ajustes"
 CORRECAO = "Correção"
-REUNIAO_ENTREGA = "Reunião de Entrega"
+LEVANTAMENTO = "Levantamento de Dados"
 
 # 3D: todo 3D/render de qualquer etapa, organizado por tipo de ambiente.
 # (nome da linha, padrão na Descrição, sem acento; o primeiro que casar vence)
@@ -102,13 +102,12 @@ REVISAO_3D = "Revisão de 3D"
 SEM_AMBIENTE_3D = "3D sem ambiente informado"
 
 ESTRUTURA = {
-    GERAL: ["Reunião de Briefing", "Visita para Levantamento de Dados"],
-    ARQ: [PLANTA_AMBIENTADA, REUNIAO_AMBIENTACAO, REVISAO, "Detalhamento do Projeto Arquitetônico", CORRECAO,
-          "Compatibilização com Estrutural", REUNIAO_ENTREGA],
-    EXE: [PLANTA_AMBIENTADA, REUNIAO_AMBIENTACAO, REVISAO, "Planta de Reforma", "Planta de Pontos",
+    GERAL: ["Reunião de Briefing", LEVANTAMENTO],
+    ARQ: [PLANTA_AMBIENTADA, REUNIAO, REVISAO, "Detalhamento", CORRECAO, "Compatibilização com Estrutural"],
+    EXE: [PLANTA_AMBIENTADA, REUNIAO, REVISAO, "Planta de Reforma", "Planta de Pontos",
           "Planta de Iluminação", "Planta de Gesso", "Paginação de Piso", "Detalhamento de Portas",
           "Detalhamento de Vidros", "Detalhamento de Cortinas", "Muro e Calçada", "Planta de Pintura",
-          "Memorial de Iluminação e Pintura", CORRECAO, REUNIAO_ENTREGA],
+          "Memorial de Iluminação e Pintura", CORRECAO],
     TRES_D: ["Fachada", "Cozinha", "Sala", "Quarto", "Banheiro / Lavabo", "Área de Serviço", "Área Externa / Lazer",
              "Closet", "Escritório", "Outros ambientes", BASE_3D, REVISAO_3D],
 }
@@ -150,7 +149,7 @@ AMBIENTES = [
 # Linhas que aparecem quando há horas que não cabem em nenhum item da estrutura
 # (ficam separadas para não distorcer as médias dos itens).
 FORA_ESTRUTURA = {
-    "reuniao": "Outras reuniões (tipo não informado)",
+    "reuniao": REUNIAO,
     "executivo": "Projeto Executivo (descrição genérica)",
     "3d": SEM_AMBIENTE_3D,
     "apresentacao": "Apresentação / ambientação",
@@ -158,7 +157,6 @@ FORA_ESTRUTURA = {
     "outros_detalhes": "Outros detalhamentos (fachada, serralheria, escada, obra)",
     "memoriais": "Memoriais",
     "cortinas": "Cortinas",
-    "entrega": REUNIAO_ENTREGA,
 }
 
 # Uma entrega só entra na média quando a etapa daquele projeto terminou: o projeto
@@ -207,7 +205,7 @@ def classificar(etapa, atividade, descricao):
     if tem(r"briefing", t):
         return GERAL, None, "Reunião de Briefing"
     if tem(r"levantamento|\bld\b|conferir medida|medicao", t):
-        return GERAL, None, "Visita para Levantamento de Dados"
+        return GERAL, None, LEVANTAMENTO
     if tem(r"\b3d\b|render|modelagem", t):
         return classificar_3d(t, secao)
 
@@ -217,13 +215,9 @@ def classificar(etapa, atividade, descricao):
     if tem(r"compatibiliz", t):
         return secao, None, "Compatibilização com Estrutural" if secao == ARQ else FORA_ESTRUTURA["compatibilizacao"]
 
-    # Reuniões e apresentações (Arquitetônico e Executivo).
-    if tem(r"entrega|termo", t):
-        return secao, None, REUNIAO_ENTREGA
-    if tem(r"reuniao|apresentac", t):
-        if tem(r"apresentac|ambienta|\bata\b", t):
-            return secao, None, REUNIAO_AMBIENTACAO
-        return secao, None, FORA_ESTRUTURA["reuniao"]
+    # Reuniões, apresentações e entregas (Arquitetônico e Executivo) ficam todas em "Reunião".
+    if tem(r"reuniao|apresentac|entrega|termo|\bata\b", t):
+        return secao, None, REUNIAO
 
     # Retrabalho: correção é diferente de revisão/ajuste da ambientação.
     if tem(r"correc", t):
@@ -238,7 +232,7 @@ def classificar(etapa, atividade, descricao):
         if tem(r"estrutur", t):
             return ARQ, None, "Compatibilização com Estrutural"
         if tem(r"arquitetonic|fachada|reforma|ampliac|uso misto|legal|aprovac|^pe\b|executivo", t):
-            return ARQ, None, "Detalhamento do Projeto Arquitetônico"
+            return ARQ, None, "Detalhamento"
         return None
 
     # Executivo
@@ -295,9 +289,7 @@ def classificar_interiores(t):
         item = "Detalhamento de obra"
     elif tem(r"criac|ambienta|apresentac", t):
         return INT, None, FORA_ESTRUTURA["apresentacao"]
-    elif tem(r"entrega|termo", t):
-        return INT, None, FORA_ESTRUTURA["entrega"]
-    elif tem(r"reuniao", t):
+    elif tem(r"reuniao|entrega|termo", t):
         return INT, None, FORA_ESTRUTURA["reuniao"]
     elif tem(r"memoria", t):
         return INT, None, FORA_ESTRUTURA["memoriais"]
@@ -593,10 +585,10 @@ def linhas_secao(secao, stats_secao):
             linhas.append((ambiente, item, stats_secao[(ambiente, item)], True))
         return linhas
 
-    ordem_amb = [nome for nome, _ in AMBIENTES] + [SEM_AMBIENTE]
     ordem_item = ATIVIDADES_AMBIENTE + [SEM_TIPO_AMBIENTE]
+    # Ambientes em ordem alfabética; "Ambiente não informado" sempre por último.
     por_ambiente = sorted({k for k in stats_secao if k[0] is not None},
-                          key=lambda k: (ordem_amb.index(k[0]), ordem_item.index(k[1])))
+                          key=lambda k: (k[0] == SEM_AMBIENTE, sem_acento(k[0]), ordem_item.index(k[1])))
     for ambiente, item in por_ambiente:
         linhas.append((ambiente, item, stats_secao[(ambiente, item)], item == SEM_TIPO_AMBIENTE))
     extras = sorted((k for k in stats_secao if k[0] is None), key=lambda k: list(FORA_ESTRUTURA.values()).index(k[1]))
@@ -777,7 +769,7 @@ def montar_html(ate_ano, ate_mes, stats, sessoes, alertas):
             '<div style="max-width:720px;margin:32px auto;">'
             '<div style="background:#1a1a1a;padding:24px 28px;border-radius:10px 10px 0 0;">'
             '<p style="margin:0;color:#fff;font-size:20px;font-weight:600;">'
-            'Referência de Horas para Orçamento · Simplific</p>'
+            'Referência de Horas para Orçamento</p>'
             f'<p style="margin:6px 0 0;color:#888;font-size:13px;">'
             f'Acumulado até {MESES[ate_mes - 1]} de {ate_ano}</p></div>'
             f'<div style="background:#fff;padding:28px;border-radius:0 0 10px 10px;">{"".join(corpo)}</div>'
