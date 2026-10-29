@@ -119,6 +119,10 @@ ATIVIDADES_AMBIENTE = ["Detalhamento de obra", "Detalhamento de marcenaria"]
 SEM_AMBIENTE = "Ambiente não informado"
 SEM_TIPO_AMBIENTE = "Detalhamento sem tipo (obra ou marcenaria)"
 TODA_ETAPA = "Toda a etapa"
+# Itens de Interiores que valem para a etapa toda (não por ambiente), nesta ordem.
+TODA_ETAPA_ITENS = ["Reunião", "Apresentação / ambientação", "Memoriais", CORRECAO]
+# Itens de Interiores que não aparecem no relatório.
+OCULTOS_INTERIORES = {"Cortinas"}
 # Ambientes que normalmente não têm obra: detalhamento sem tipo conta como marcenaria.
 SO_MARCENARIA = {"Closet", "Circulação", "Depósito", "Despensa", "Sala de Jantar", "Sala de TV / Estar",
                  "Outras salas", "Brinquedoteca"}
@@ -158,7 +162,9 @@ AMBIENTES = [
 # separada, então a média é entre os quartos (e não a soma de todos os quartos do projeto).
 AGRUPAR_AMBIENTE = {
     **{nome: "Quarto" for nome in
-       ("Quarto Casal", "Quarto Bebê", "Quarto Filho(a)", "Quarto Hóspedes", "Suíte", "Quarto")},
+       ("Quarto Casal", "Quarto Bebê", "Quarto Filho(a)", "Quarto Hóspedes", "Suíte", "Quarto", "Brinquedoteca")},
+    **{nome: "Depósito / Despensa" for nome in ("Depósito", "Despensa")},
+    **{nome: "Sala de Estar / TV" for nome in ("Sala de TV / Estar", "Outras salas")},
     **{nome: "Banheiro" for nome in ("Lavabo", "Banheiro Suíte", "Banheiro Social", "Banheiros")},
     **{nome: "Cozinha" for nome in ("Cozinha", "Copa", "Cozinha Gourmet")},
 }
@@ -628,10 +634,12 @@ def linhas_secao(secao, stats_secao):
                           key=lambda k: (k[0] == SEM_AMBIENTE, sem_acento(k[0]), ordem_item.index(k[1])))
     for ambiente, item in por_ambiente:
         linhas.append((ambiente, item, stats_secao[(ambiente, item)], item == SEM_TIPO_AMBIENTE))
-    # Depois dos ambientes: a Correção da etapa toda e, por último, o que está fora da estrutura.
-    if (None, CORRECAO) in stats_secao:
-        linhas.append((TODA_ETAPA, CORRECAO, stats_secao[(None, CORRECAO)], False))
-    extras = sorted((k for k in stats_secao if k[0] is None and k[1] != CORRECAO),
+    # Depois dos ambientes: os itens da etapa toda e, por último, o que está fora da estrutura.
+    for item in TODA_ETAPA_ITENS:
+        if (None, item) in stats_secao:
+            linhas.append((TODA_ETAPA, item, stats_secao[(None, item)], False))
+    extras = sorted((k for k in stats_secao if k[0] is None and k[1] not in TODA_ETAPA_ITENS
+                     and k[1] not in OCULTOS_INTERIORES),
                     key=lambda k: list(FORA_ESTRUTURA.values()).index(k[1]))
     for ambiente, item in extras:
         linhas.append((None, item, stats_secao[(ambiente, item)], True))
