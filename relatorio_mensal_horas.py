@@ -457,6 +457,9 @@ def validar(registros, corte):
                         r.get("etapa")))
 
     for r in registros:
+        # Registros sem projeto em "2026 | Projetos" são desconsiderados (nem cálculo, nem alerta).
+        if not r["projeto"]:
+            continue
         if r["inicio"] and parse_iso(r["inicio"]) >= corte:
             continue
         equipe = [e for e in r["equipe"] if e in PROFISSIONAIS]
