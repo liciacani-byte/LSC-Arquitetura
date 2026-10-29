@@ -101,17 +101,19 @@ SEM_AMBIENTE_3D = "3D sem ambiente informado"
 ESTRUTURA = {
     GERAL: ["Reunião de Briefing", LEVANTAMENTO],
     ARQ: [PLANTA_AMBIENTADA, REUNIAO, REVISAO, "Detalhamento", CORRECAO, "Compatibilização com Estrutural"],
-    EXE: [PLANTA_AMBIENTADA, REUNIAO, REVISAO, "Planta de Reforma", "Planta de Pontos",
+    EXE: [PLANTA_AMBIENTADA, REUNIAO, "Planta de Reforma", "Planta de Pontos",
           "Planta de Iluminação", "Planta de Gesso", "Paginação de Piso", "Detalhamento de Portas",
-          "Detalhamento de Vidros", "Detalhamento de Cortinas", "Muro e Calçada", "Planta de Pintura",
+          "Detalhamento de Vidros", "Detalhamento de Cortinas", "Muro e Calçada",
           "Memorial de Iluminação e Pintura", CORRECAO],
     # Ambientes em ordem alfabética; base e revisão no final.
     TRES_D: sorted((nome for nome, _ in TIPOS_3D if nome != "Outros ambientes"),
                    key=lambda n: unicodedata.normalize("NFKD", n).encode("ascii", "ignore").lower())
             + [BASE_3D, REVISAO_3D],
 }
-# Linhas do 3D que não aparecem no relatório.
-OCULTOS_3D = {"Outros ambientes", SEM_AMBIENTE_3D}
+# Linhas que não aparecem no relatório quando não fazem parte da estrutura da seção
+# (no 3D: "Outros ambientes" e "3D sem ambiente"; no Executivo: revisão, pintura e outros detalhamentos).
+OCULTOS = {"Outros ambientes", SEM_AMBIENTE_3D, REVISAO, "Planta de Pintura",
+           "Outros detalhamentos (fachada, serralheria, escada, obra)"}
 # Em Interiores, cada ambiente tem estes itens (a criação/3D fica na seção 3D).
 # A correção de Interiores fica numa linha só, para a etapa toda (não por ambiente).
 ATIVIDADES_AMBIENTE = ["Detalhamento de obra", "Detalhamento de marcenaria"]
@@ -616,7 +618,7 @@ def linhas_secao(secao, stats_secao):
     if secao in ESTRUTURA:
         for item in ESTRUTURA[secao]:
             linhas.append((None, item, stats_secao.get((None, item)), False))
-        extras = [k for k in stats_secao if k[1] not in ESTRUTURA[secao] and k[1] not in OCULTOS_3D]
+        extras = [k for k in stats_secao if k[1] not in ESTRUTURA[secao] and k[1] not in OCULTOS]
         for ambiente, item in sorted(extras, key=lambda k: list(FORA_ESTRUTURA.values()).index(k[1])
                                      if k[1] in FORA_ESTRUTURA.values() else 99):
             linhas.append((ambiente, item, stats_secao[(ambiente, item)], True))
