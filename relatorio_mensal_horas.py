@@ -60,6 +60,13 @@ USUARIOS = {
 # Uma entrega só entra na média quando está concluída: o projeto foi finalizado
 # ou a atividade ficou esse tempo sem nenhum lançamento novo naquele projeto.
 STATUS_PROJETO_CONCLUIDO = {"Finalizado", "Projeto Finalizado | Execução"}
+
+# Etapas mostradas no relatório (valor do campo Etapa -> título da seção), nesta ordem.
+ETAPAS = {
+    "I - Projeto Arquitetônico": "Arquitetônico",
+    "II - Projeto Executivo": "Executivo",
+    "III - Projeto de Interiores": "Interiores",
+}
 DIAS_SEM_LANCAMENTO = 30
 
 # Registros acima disso são tratados como erro de digitação (ex.: Fim no dia errado).
@@ -227,6 +234,7 @@ def buscar_registros():
                 "equipe": equipe,
                 "projeto": projetos[0] if projetos else None,
                 "status_projeto": status_rollup(p.get("Status do Projeto")),
+                "etapa": texto_de(p.get("Etapa")),
                 "descricao": texto_de(p.get("Descrição")),
                 "atividade": texto_de(p.get("Atividade")),
                 "inicio": data_com_hora(p.get("Inicio")),
@@ -320,14 +328,15 @@ def validar(registros, corte):
 
 def entregas_concluidas(sessoes, corte):
     """
-    Agrupa as sessões em entregas (projeto + atividade + profissional) e devolve
-    só as concluídas até a data de corte.
+    Agrupa as sessões em entregas (projeto + etapa + atividade + profissional) e
+    devolve só as concluídas até a data de corte. Sessões sem projeto ou fora das
+    etapas do relatório ficam de fora.
     """
     grupos = defaultdict(lambda: {"min": 0.0, "custo": 0.0, "sem_custo": False, "ultimo": None, "status": None})
     for s in sessoes:
-        if not s["projeto"]:
+        if not s["projeto"] or s.get("etapa") not in ETAPAS:
             continue
-        g = grupos[(s["projeto"], s["tipo"], s["pessoa"])]
+        g = grupos[(s["projeto"], s["etapa"], s["tipo"], s["pessoa"])]
         g["min"] += s["min"]
         if s["custo"] is None:
             g["sem_custo"] = True
@@ -336,20 +345,20 @@ def entregas_concluidas(sessoes, corte):
         g["ultimo"] = max(g["ultimo"] or s["fim_dt"], s["fim_dt"])
         g["status"] = g["status"] or s["status_projeto"]
 
-    # A conclusão é decidida por projeto + atividade (vale para os dois profissionais).
+    # A conclusão é decidida por projeto + etapa + atividade (vale para os dois profissionais).
     ultimo_atividade = defaultdict(lambda: None)
-    for (projeto, tipo, _), g in grupos.items():
-        atual = ultimo_atividade[(projeto, tipo)]
-        ultimo_atividade[(projeto, tipo)] = max(atual or g["ultimo"], g["ultimo"])
+    for (projeto, etapa, tipo, _), g in grupos.items():
+        atual = ultimo_atividade[(projeto, etapa, tipo)]
+        ultimo_atividade[(projeto, etapa, tipo)] = max(atual or g["ultimo"], g["ultimo"])
 
     limite = corte - timedelta(days=DIAS_SEM_LANCAMENTO)
     concluidas = {}
-    for (projeto, tipo, pessoa), g in grupos.items():
+    for (projeto, etapa, tipo, pessoa), g in grupos.items():
         finalizado = g["status"] in STATUS_PROJETO_CONCLUIDO
-        parado = ultimo_atividade[(projeto, tipo)] <= limite
+        parado = ultimo_atividade[(projeto, etapa, tipo)] <= limite
         if finalizado or parado:
-            concluidas[(projeto, tipo, pessoa)] = {"min": g["min"],
-                                                   "custo": None if g["sem_custo"] else g["custo"]}
+            concluidas[(projeto, etapa, tipo, pessoa)] = {"min": g["min"],
+                                                          "custo": None if g["sem_custo"] else g["custo"]}
     return concluidas
 
 
@@ -366,30 +375,29 @@ def estatisticas(valores, custos):
 
 
 def calcular(entregas):
-    """stats[tipo][pessoa ou 'Total'] = estatísticas das entregas concluídas."""
-    por_pessoa = defaultdict(lambda: defaultdict(lambda: ([], [])))
+    """stats[etapa][tipo][pessoa ou 'Total'] = estatísticas das entregas concluídas."""
+    por_pessoa = defaultdict(lambda: ([], []))
     total = defaultdict(lambda: {"min": 0.0, "custo": 0.0, "sem_custo": False})
-    for (projeto, tipo, pessoa), e in entregas.items():
-        minutos, custos = por_pessoa[tipo][pessoa]
+    for (projeto, etapa, tipo, pessoa), e in entregas.items():
+        minutos, custos = por_pessoa[(etapa, tipo, pessoa)]
         minutos.append(e["min"])
         custos.append(e["custo"])
-        t = total[(projeto, tipo)]
+        t = total[(projeto, etapa, tipo)]
         t["min"] += e["min"]
         if e["custo"] is None:
             t["sem_custo"] = True
         else:
             t["custo"] += e["custo"]
 
-    stats = defaultdict(dict)
-    for tipo, pessoas in por_pessoa.items():
-        for pessoa, (minutos, custos) in pessoas.items():
-            stats[tipo][pessoa] = estatisticas(minutos, custos)
+    stats = defaultdict(lambda: defaultdict(dict))
+    for (etapa, tipo, pessoa), (minutos, custos) in por_pessoa.items():
+        stats[etapa][tipo][pessoa] = estatisticas(minutos, custos)
     totais = defaultdict(lambda: ([], []))
-    for (projeto, tipo), t in total.items():
-        totais[tipo][0].append(t["min"])
-        totais[tipo][1].append(None if t["sem_custo"] else t["custo"])
-    for tipo, (minutos, custos) in totais.items():
-        stats[tipo]["Total"] = estatisticas(minutos, custos)
+    for (projeto, etapa, tipo), t in total.items():
+        totais[(etapa, tipo)][0].append(t["min"])
+        totais[(etapa, tipo)][1].append(None if t["sem_custo"] else t["custo"])
+    for (etapa, tipo), (minutos, custos) in totais.items():
+        stats[etapa][tipo]["Total"] = estatisticas(minutos, custos)
     return stats
 
 
@@ -400,16 +408,16 @@ body{font-family:Arial,Helvetica,sans-serif;color:#2b2b2b;font-size:14px;margin:
 .box{max-width:820px;margin:0 auto;background:#fff;border:1px solid #ece7df;border-radius:12px;padding:28px}
 h1{font-size:21px;margin:0 0 4px} h2{font-size:16px;margin:32px 0 6px}
 p.sub{color:#777;margin:0 0 16px;font-size:13px}
-.kpis{width:100%;border-collapse:separate;border-spacing:8px 0;margin:20px -8px 4px}
-.kpis td{background:#f4f1ec;border-radius:10px;padding:12px 14px;text-align:left;border:0}
-.kpis b{display:block;font-size:22px;color:#2b2b2b} .kpis span{color:#777;font-size:12px}
+h2.etapa{font-size:18px;margin:40px 0 4px;padding-bottom:8px;border-bottom:3px solid #c9a97c}
+h3{font-size:14px;margin:22px 0 6px;color:#555}
+td.pessoa{color:#777;font-size:13px}
+tr.grupo td{border-top:2px solid #f0ebe3}
 table.t{border-collapse:collapse;width:100%}
 .t th,.t td{padding:8px 10px;border-bottom:1px solid #eee;text-align:right;white-space:nowrap}
 .t th{font-size:12px;color:#777;font-weight:bold;border-bottom:2px solid #e6e0d6}
 .t th:first-child,.t td:first-child{text-align:left;white-space:normal}
 .t td.ref{font-weight:bold;font-size:15px}
 .n{color:#999;font-size:11px;font-weight:normal;display:block}
-.novo{color:#2f7d4f;font-size:11px}
 .muted{color:#bbb}
 .bar{background:#c9a97c;height:6px;border-radius:3px;display:inline-block;vertical-align:middle}
 .alerta td{font-size:12px} .alerta td:first-child{white-space:nowrap}
@@ -425,63 +433,62 @@ def celula_ref(st):
     return f'<td class="ref">{horas(st["media"])}<span class="n">{st["n"]} entrega{"s" * (st["n"] != 1)}</span></td>'
 
 
-def montar_html(ate_ano, ate_mes, stats, stats_antes, sessoes, alertas, sem_projeto):
-    pessoas = list(PROFISSIONAIS.values())
-    titulo = f"Referência de horas por atividade — atualizada até {MESES[ate_mes - 1]} de {ate_ano}"
-    tipos = sorted(stats, key=lambda t: -stats[t]["Total"]["n"])
-    tipos = [t for t in tipos if t != SEM_TIPO] + ([SEM_TIPO] if SEM_TIPO in stats else [])
-
-    n_entregas = sum(stats[t]["Total"]["n"] for t in stats)
-    n_antes = sum(stats_antes[t]["Total"]["n"] for t in stats_antes)
-    primeiro = min(s["ini"] for s in sessoes).astimezone(FUSO) if sessoes else None
-    corrigir = sum(1 for a in alertas if a[5] != "contado")
-
-    html = [f"<html><head><meta charset='utf-8'><style>{ESTILO}</style></head><body><div class='box'>",
-            f"<h1>{titulo}</h1>",
-            "<p class='sub'>Média geral acumulada de todas as entregas concluídas registradas no "
-            "Controle de Horas LSC" + (f", desde {MESES[primeiro.month - 1]} de {primeiro.year}" if primeiro else "")
-            + ". Use como referência para orçamentos.</p>",
-            "<table class='kpis'><tr>",
-            f"<td><b>{n_entregas}</b><span>entregas na base de referência</span></td>",
-            f"<td><b>+{n_entregas - n_antes}</b><span>entregas incorporadas neste mês</span></td>",
-            f"<td><b>{horas(sum(s['min'] for s in sessoes))}</b><span>horas válidas registradas</span></td>",
-            f"<td><b>{corrigir}</b><span>registros para corrigir</span></td>",
-            "</tr></table>"]
+def secao_etapa(nome, stats_etapa, pessoas):
+    tipos = sorted(stats_etapa, key=lambda t: -stats_etapa[t]["Total"]["n"])
+    tipos = [t for t in tipos if t != SEM_TIPO] + ([SEM_TIPO] if SEM_TIPO in stats_etapa else [])
+    html = [f"<h2 class='etapa'>{nome}</h2>"]
+    if not tipos:
+        html.append("<p class='sub'>Ainda não há entregas concluídas nesta etapa.</p>")
+        return html
 
     # Tabela de referência
-    maior = max((stats[t]["Total"]["media"] for t in tipos), default=1)
-    html.append("<h2>Tabela de referência — média por entrega</h2>"
-                "<p class='sub'>Horas médias que cada profissional gasta em uma entrega daquela atividade "
-                "(todas as sessões dela dentro de um projeto). “—” = o profissional não participa da atividade.</p>"
+    maior = max(stats_etapa[t]["Total"]["media"] for t in tipos) or 1
+    html.append("<h3>Referência para orçamento — média por entrega</h3>"
                 "<table class='t'><tr><th>Atividade</th>"
                 + "".join(f"<th>{p}</th>" for p in pessoas)
                 + "<th>Total</th><th>Custo médio</th><th></th></tr>")
     for t in tipos:
-        tot = stats[t]["Total"]
-        barra = int(110 * tot["media"] / maior) if maior else 0
+        tot = stats_etapa[t]["Total"]
+        barra = int(110 * tot["media"] / maior)
         html.append(f"<tr><td>{t}</td>"
-                    + "".join(celula_ref(stats[t].get(p)) for p in pessoas)
+                    + "".join(celula_ref(stats_etapa[t].get(p)) for p in pessoas)
                     + celula_ref(tot)
                     + f"<td>{reais(tot['custo'])}</td>"
                     f"<td><span class='bar' style='width:{barra}px'></span></td></tr>")
     html.append("</table>")
 
     # Detalhe por profissional
-    for p in pessoas:
-        linhas = [t for t in tipos if p in stats[t]]
-        if not linhas:
-            continue
-        html.append(f"<h2>Detalhe — {p}</h2><table class='t'><tr><th>Atividade</th><th>Entregas</th>"
-                    "<th>Média</th><th>Mediana</th><th>Mínimo</th><th>Máximo</th><th>Custo médio</th></tr>")
-        for t in linhas:
-            st = stats[t][p]
-            novas = st["n"] - stats_antes.get(t, {}).get(p, {}).get("n", 0)
-            html.append(f"<tr><td>{t}</td>"
-                        f"<td>{st['n']}" + (f" <span class='novo'>+{novas}</span>" if novas > 0 else "") + "</td>"
+    html.append("<h3>Detalhe por profissional</h3><table class='t'><tr><th>Atividade</th><th>Profissional</th>"
+                "<th>Entregas</th><th>Média</th><th>Mediana</th><th>Mínimo</th><th>Máximo</th>"
+                "<th>Custo médio</th></tr>")
+    for t in tipos:
+        participantes = [p for p in pessoas if p in stats_etapa[t]]
+        for i, p in enumerate(participantes):
+            st = stats_etapa[t][p]
+            nome_atividade = t if i == 0 else ""
+            html.append(f"<tr{' class=grupo' if i == 0 else ''}><td>{nome_atividade}</td>"
+                        f"<td class='pessoa' style='text-align:left'>{p}</td><td>{st['n']}</td>"
                         f"<td><b>{horas(st['media'])}</b></td><td>{horas(st['mediana'])}</td>"
                         f"<td>{horas(st['min'])}</td><td>{horas(st['max'])}</td>"
                         f"<td>{reais(st['custo'])}</td></tr>")
-        html.append("</table>")
+    html.append("</table>")
+    return html
+
+
+def montar_html(ate_ano, ate_mes, stats, sessoes, alertas):
+    pessoas = list(PROFISSIONAIS.values())
+    titulo = f"Referência de horas por atividade — atualizada até {MESES[ate_mes - 1]} de {ate_ano}"
+    primeiro = min(s["ini"] for s in sessoes).astimezone(FUSO) if sessoes else None
+
+    html = [f"<html><head><meta charset='utf-8'><style>{ESTILO}</style></head><body><div class='box'>",
+            f"<h1>{titulo}</h1>",
+            "<p class='sub'>Média geral acumulada de todas as entregas concluídas registradas no "
+            "Controle de Horas LSC" + (f", desde {MESES[primeiro.month - 1]} de {primeiro.year}" if primeiro else "")
+            + ", por etapa de projeto. Uma entrega é todo o tempo gasto em uma atividade dentro de um projeto. "
+            "“—” = o profissional não participa da atividade.</p>"]
+
+    for etapa, nome in ETAPAS.items():
+        html += secao_etapa(nome, stats.get(etapa, {}), pessoas)
 
     # Alertas
     if alertas:
@@ -499,15 +506,15 @@ def montar_html(ate_ano, ate_mes, stats, stats_antes, sessoes, alertas, sem_proj
                         f"<td><a href='{url}'>abrir</a></td></tr>")
         html.append("</table>")
 
-    nao_classificadas = sorted({s["descricao"] or "(sem descrição)" for s in sessoes if s["tipo"] == SEM_TIPO})
+    nao_classificadas = sorted({s["descricao"] or "(sem descrição)" for s in sessoes
+                                if s["tipo"] == SEM_TIPO and s.get("etapa") in ETAPAS})
     html.append("<div class='nota'><b>Como os números são calculados.</b> "
-                "Profissional = Ref. Equipe. Custo = fórmula Custo da base (custo-hora de cada profissional). "
-                "Tipo de atividade deduzido pela Descrição. Uma entrega entra na média quando o projeto é "
-                f"finalizado ou quando a atividade fica {DIAS_SEM_LANCAMENTO} dias sem lançamentos naquele projeto. "
-                "Registros sobrepostos têm o trecho repetido contado uma vez só; duplicados e inconsistentes "
-                "ficam de fora até serem corrigidos."
-                + (f"<br><br>{horas(sem_projeto)} registradas sem projeto vinculado não entram na média por entrega "
-                   "(não é possível saber a que entrega pertencem)." if sem_projeto else "")
+                "Profissional = Ref. Equipe. Etapa = campo Etapa do registro. Custo = fórmula Custo da base "
+                "(custo-hora de cada profissional). Tipo de atividade deduzido pela Descrição. Uma entrega entra "
+                f"na média quando o projeto é finalizado ou quando a atividade fica {DIAS_SEM_LANCAMENTO} dias sem "
+                "lançamentos naquele projeto. Registros sobrepostos têm o trecho repetido contado uma vez só; "
+                "duplicados e inconsistentes ficam de fora até serem corrigidos. Registros sem projeto ou de "
+                "outras etapas (Gestão, Assessoria, Simplific) não entram neste relatório."
                 + ("<br><br>Descrições sem classificação: " + ", ".join(nao_classificadas[:30])
                    if nao_classificadas else "")
                 + "</div></div></body></html>")
@@ -531,14 +538,9 @@ def enviar_email(assunto, html):
 
 def gerar(registros, ano, mes):
     corte = datetime(ano + (mes == 12), mes % 12 + 1, 1, tzinfo=FUSO)
-    corte_antes = datetime(ano, mes, 1, tzinfo=FUSO)
-
     sessoes, alertas = validar(registros, corte)
     stats = calcular(entregas_concluidas(sessoes, corte))
-    sessoes_antes = [s for s in sessoes if s["ini"] < corte_antes]
-    stats_antes = calcular(entregas_concluidas(sessoes_antes, corte_antes))
-    sem_projeto = sum(s["min"] for s in sessoes if not s["projeto"])
-    return montar_html(ano, mes, stats, stats_antes, sessoes, alertas, sem_projeto)
+    return montar_html(ano, mes, stats, sessoes, alertas)
 
 
 def main():
