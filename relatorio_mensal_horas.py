@@ -658,170 +658,164 @@ def linhas_secao(secao, stats_secao):
 # Mesmo visual do relatorio.py (Relatório Diário de Produção): fonte do sistema,
 # cabeçalho escuro, títulos de seção em caixa alta e tabelas com borda clara.
 # Cores das pessoas = etiquetas "Aguarda Lícia" / "Aguarda Willian" do relatório diário.
+# Layout compacto em duas colunas, pensado para caber em uma folha A4.
 COR_PESSOA = {"Lícia": ("#92400e", "#fef3c7"), "Willian": ("#1e40af", "#dbeafe")}
-DESCRICAO_SECAO = {
-    GERAL: "Comum a todos os projetos",
-    ARQ: "Itens da etapa de Projeto Arquitetônico",
-    EXE: "Itens da etapa de Projeto Executivo",
-    INT: "Detalhamento por ambiente",
-    TRES_D: "Todo 3D e render, de qualquer etapa, por tipo de ambiente",
-}
-TD = "padding:10px;border-bottom:1px solid #f8f8f8;font-size:13px;vertical-align:top;"
+NOTA_SECAO = {TRES_D: "por tipo de ambiente", INT: "detalhamento por ambiente"}
+TD = "padding:4px 8px;border-bottom:1px solid #f3f3f3;font-size:11.5px;"
+TH = ("font-size:9px;text-transform:uppercase;letter-spacing:.4px;color:#aaa;padding:4px 8px;"
+      "border-bottom:1px solid #eee;font-weight:500;")
+LINK = "color:#1a1a1a;text-decoration:none;font-weight:500;"
 
 
 def etiqueta(texto, cor, fundo):
-    return (f'<span style="display:inline-block;font-size:10px;padding:2px 8px;border-radius:99px;'
-            f'font-weight:500;background:{fundo};color:{cor};">{texto}</span>')
+    return (f'<span style="display:inline-block;font-size:9px;padding:1px 7px;border-radius:99px;'
+            f'font-weight:600;background:{fundo};color:{cor};">{texto}</span>')
 
 
-def contador(n):
-    return (f'<span style="background:#f0f0f0;color:#888;font-size:10px;padding:1px 6px;'
-            f'border-radius:99px;font-weight:500;margin-left:6px;">{n}</span>')
+def titulo_secao(numero, secao):
+    nota = (f'<span style="font-weight:400;letter-spacing:0;text-transform:none;color:#aaa;"> · '
+            f'{NOTA_SECAO[secao]}</span>' if secao in NOTA_SECAO else "")
+    return (f'<p style="margin:0 0 6px;font-size:10px;font-weight:700;text-transform:uppercase;'
+            f'letter-spacing:1.3px;color:#888;">{numero:02d} — {secao}{nota}</p>')
 
 
-def secao_titulo(numero, secao):
-    return (f'<p style="margin:0 0 4px;font-size:11px;font-weight:700;text-transform:uppercase;'
-            f'letter-spacing:1.5px;color:#888;">Seção {numero} — {secao}</p>'
-            f'<p style="margin:0 0 14px;font-size:12px;color:#aaa;padding-bottom:8px;'
-            f'border-bottom:1px solid #f0f0f0;">{DESCRICAO_SECAO[secao]}</p>')
-
-
-def divider():
-    return '<hr style="border:none;border-top:1px solid #f0f0f0;margin:26px 0;">'
-
-
-def celula_media(st):
+def celula(st):
     if not st:
-        return f'<td style="{TD}text-align:right;color:#ddd;white-space:nowrap;">—</td>'
-    return (f'<td style="{TD}text-align:right;white-space:nowrap;font-weight:600;color:#1a1a1a;">'
+        return f'<td style="{TD}text-align:right;color:#ddd;width:62px;">—</td>'
+    return (f'<td style="{TD}text-align:right;white-space:nowrap;font-weight:600;color:#1a1a1a;width:62px;">'
             f'{horas(st["media"])}</td>')
 
 
-def linha_html(rotulo, dados, pessoas, fora=False, recuo=False):
-    tem_dados = bool(dados and dados.get("entregas"))
-    cor = "#bbb" if not tem_dados else ("#888" if fora else "#1a1a1a")
-    marca = f' <span style="font-size:11px;color:#bbb;">· genérica</span>' if fora and tem_dados else ""
-    celulas = "".join(celula_media((dados or {}).get(p)) for p in pessoas)
-    return (f'<tr><td style="{TD}padding-left:{22 if recuo else 10}px;color:{cor};">{rotulo}{marca}</td>'
-            f'{celulas}</tr>')
+def tabela(colunas, linhas):
+    """colunas: rótulos do cabeçalho; linhas: (rótulo, [stats ou None...], cinza)."""
+    cab = "".join(f'<th style="{TH}text-align:{"left" if i == 0 else "right"};">{c}</th>'
+                  for i, c in enumerate(colunas))
+    corpo = "".join(
+        f'<tr><td style="{TD}color:{"#999;font-style:italic" if cinza else "#1a1a1a"};">{rotulo}</td>'
+        + "".join(celula(st) for st in valores) + "</tr>"
+        for rotulo, valores, cinza in linhas)
+    return ('<div style="border:1px solid #eee;border-radius:6px;overflow:hidden;">'
+            '<table style="width:100%;border-collapse:collapse;">'
+            f'<thead><tr>{cab}</tr></thead><tbody>{corpo}</tbody></table></div>')
 
 
-def header_grupo(texto, ncols, discreto=False):
-    cor = "#999" if discreto else "#444"
-    return (f'<tr style="background:#f4f4f4;"><td colspan="{ncols}" style="padding:7px 10px;font-size:11px;'
-            f'font-weight:700;color:{cor};border-bottom:1px solid #e8e8e8;letter-spacing:.2px;">{texto}</td></tr>')
+def cabecalho_pessoas(primeira, pessoas):
+    return [primeira] + [etiqueta(p, *COR_PESSOA[p]) for p in pessoas]
 
 
-def tabela_secao(numero, secao, stats_secao, pessoas):
-    linhas = linhas_secao(secao, stats_secao)
-    html = [secao_titulo(numero, secao)]
-    if not linhas:
-        html.append('<p style="color:#bbb;font-size:13px;padding:8px 0;font-style:italic;">'
-                    'Ainda não há entregas concluídas.</p>')
-        return html
-
-    th = ('text-align:{a};font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:#aaa;'
-          'padding:6px 10px;border-bottom:1px solid #f0f0f0;font-weight:500;')
-    cab = (f'<th style="{th.format(a="left")}">Atividade</th>'
-           + "".join(f'<th style="{th.format(a="right")}width:90px;">{etiqueta(p, *COR_PESSOA[p])}</th>'
-                     for p in pessoas))
-    ncols = 1 + len(pessoas)
-    corpo = []
-    ambiente_atual, divisa = object(), False
-    for ambiente, item, dados, fora in linhas:
-        if secao == INT and ambiente is not None:
-            if ambiente != ambiente_atual:
-                rotulo = ambiente + (" · média por projeto" if ambiente == SEM_AMBIENTE else "")
-                corpo.append(header_grupo(rotulo, ncols, discreto=ambiente == SEM_AMBIENTE))
-                ambiente_atual = ambiente
-            corpo.append(linha_html(item, dados, pessoas, fora=fora, recuo=True))
-            continue
-        if fora and not divisa:
-            corpo.append(header_grupo("Fora da estrutura · descrições genéricas", ncols, discreto=True))
-            divisa = True
-        corpo.append(linha_html(item, dados, pessoas, fora=fora))
-    html.append('<div style="border:1px solid #eee;border-radius:8px;overflow:hidden;margin-bottom:14px;">'
-                '<table style="width:100%;border-collapse:collapse;font-size:13px;">'
-                f'<thead><tr>{cab}</tr></thead><tbody>{"".join(corpo)}</tbody></table></div>')
-    return html
+def bloco_padrao(numero, secao, stats_secao, pessoas):
+    """Geral, Arquitetônico, Executivo e 3D: Atividade | Lícia | Willian."""
+    linhas = [(item, [(dados or {}).get(p) for p in pessoas], fora)
+              for _, item, dados, fora in linhas_secao(secao, stats_secao)]
+    return titulo_secao(numero, secao) + tabela(cabecalho_pessoas("Atividade", pessoas), linhas)
 
 
-def alerta(titulo, explicacao, itens, fundo, borda):
-    lis = "".join(f'<li style="margin:3px 0;">{i}</li>' for i in itens)
-    return (f'<div style="background:{fundo};border-left:3px solid {borda};border-radius:0 6px 6px 0;'
-            f'padding:10px 14px;margin-bottom:10px;font-size:13px;">'
-            f'<div style="font-weight:600;color:#1a1a1a;">{titulo}</div>'
-            f'<div style="font-size:11px;color:#888;margin:2px 0 6px;">{explicacao}</div>'
-            f'<ul style="margin:0;padding-left:18px;font-size:12px;color:#555;line-height:1.5;">{lis}</ul></div>')
+def bloco_interiores(numero, stats_secao, pessoas):
+    """
+    Interiores em matriz: uma linha por ambiente, colunas Obra | Marcenaria (médias do
+    Willian, que faz todo o detalhamento). Depois, a tabela "Toda a etapa".
+    """
+    resp = RESPONSAVEL_DETALHAMENTO_INTERIORES
+    matriz, sem_tipo, toda = {}, [], []
+    for ambiente, item, dados, fora in linhas_secao(INT, stats_secao):
+        if ambiente == TODA_ETAPA or ambiente is None:
+            toda.append((item, [(dados or {}).get(p) for p in pessoas], fora))
+        elif item == SEM_TIPO_AMBIENTE:
+            sem_tipo += [f"{ambiente} {horas(st['media'])} ({p})" for p in pessoas if (st := dados.get(p))]
+        else:
+            matriz.setdefault(ambiente, {})[item] = (dados or {}).get(resp)
+
+    html = [titulo_secao(numero, INT)]
+    if not matriz and not toda:
+        return "".join(html) + '<p style="color:#bbb;font-size:11px;font-style:italic;">Ainda não há entregas.</p>'
+    if matriz:
+        linhas = [(amb + (" (por projeto)" if amb == SEM_AMBIENTE else ""),
+                   [m.get("Detalhamento de obra"), m.get("Detalhamento de marcenaria")], amb == SEM_AMBIENTE)
+                  for amb, m in matriz.items()]
+        html.append(tabela(["Ambiente", "Obra", "Marcenaria"], linhas))
+        nota = f"Médias do {resp}, que faz todo o detalhamento."
+        if sem_tipo:
+            nota += " Sem tipo de detalhamento: " + ", ".join(sem_tipo) + "."
+        html.append(f'<p style="margin:4px 0 0;font-size:9.5px;color:#aaa;line-height:1.4;">{nota}</p>')
+    if toda:
+        html.append('<div style="margin-top:12px;">'
+                    + tabela(cabecalho_pessoas("Toda a etapa", pessoas), toda) + '</div>')
+    return "".join(html)
+
+
+def caixa(titulo, itens, fundo, borda):
+    lis = "".join(f'<li style="margin:1px 0;">{i}</li>' for i in itens)
+    return (f'<div style="background:{fundo};border-left:3px solid {borda};border-radius:0 5px 5px 0;'
+            f'padding:7px 10px;font-size:10.5px;"><div style="font-weight:600;color:#1a1a1a;">{titulo}</div>'
+            f'<ul style="margin:3px 0 0;padding-left:15px;color:#555;line-height:1.45;">{lis}</ul></div>')
 
 
 def lista_pendencias(numero, alertas, sessoes):
-    """Resumo final: registros inconsistentes e descrições sem classificação, com links."""
+    """Resumo final: registros inconsistentes e descrições sem classificação, lado a lado, com links."""
     relevantes = [a for a in alertas if a[6] in ETAPAS]
     sem_tipo = defaultdict(list)
     for s in sessoes:
         if s["classe"] is None and s.get("etapa") in ETAPAS and s["projeto"]:
             sem_tipo[(ETAPAS[s["etapa"]], s["descricao"] or "(sem descrição)")].append(s)
     if not relevantes and not sem_tipo:
-        return []
+        return ""
 
-    link = "color:#1a1a1a;text-decoration:none;font-weight:500;"
-    html = [divider(),
-            f'<p style="margin:0 0 14px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;'
-            f'color:#888;padding-bottom:8px;border-bottom:1px solid #f0f0f0;">Seção {numero} — Para corrigir no '
-            f'Notion</p>']
+    colunas = []
     if relevantes:
         itens = []
         for pessoa, desc, inicio, motivo, url, efeito, _ in relevantes:
             data = parse_iso(inicio).astimezone(FUSO).strftime("%d/%m/%y") if inicio else "sem data"
-            itens.append(f'<a href="{url}" style="{link}">{desc}</a> '
+            itens.append(f'<a href="{url}" style="{LINK}">{desc}</a> '
                          f'<span style="color:#aaa;">· {pessoa} · {data} · {motivo}</span>')
-        html.append(alerta(f"Registros inconsistentes {contador(len(relevantes))}",
-                           "Os que estão fora do cálculo entram assim que forem corrigidos.",
-                           itens, "#fffbeb", "#f6c90e"))
+        colunas.append(caixa(f"Registros inconsistentes ({len(relevantes)})", itens, "#fffbeb", "#f6c90e"))
     if sem_tipo:
         itens = []
         for (secao, desc), lista in sorted(sem_tipo.items(), key=lambda kv: (kv[0][0], sem_acento(kv[0][1]))):
             recente = max(lista, key=lambda s: s["ini"])
             qtd = f" · {len(lista)} registros" if len(lista) > 1 else ""
-            itens.append(f'<a href="{recente["url"]}" style="{link}">{desc}</a> '
+            itens.append(f'<a href="{recente["url"]}" style="{LINK}">{desc}</a> '
                          f'<span style="color:#aaa;">· {secao}{qtd}</span>')
-        html.append(alerta(f"Descrições sem classificação {contador(len(sem_tipo))}",
-                           "Não correspondem a nenhum item da estrutura e ficam fora das médias. "
-                           "Ajuste a descrição ou a etapa no Notion, ou peça uma regra nova.",
-                           itens, "#ebf4ff", "#63b3ed"))
-    return html
+        colunas.append(caixa(f"Descrições sem classificação ({len(sem_tipo)})", itens, "#ebf4ff", "#63b3ed"))
+
+    celulas = "".join(f'<td style="width:50%;vertical-align:top;padding:0 {"10px 0 0" if i == 0 else "0 0 10px"};">'
+                      f'{c}</td>' for i, c in enumerate(colunas))
+    return (f'<p style="margin:4px 0 6px;font-size:10px;font-weight:700;text-transform:uppercase;'
+            f'letter-spacing:1.3px;color:#888;">{numero:02d} — Para corrigir no Notion</p>'
+            f'<table style="width:100%;border-collapse:collapse;table-layout:fixed;"><tr>{celulas}</tr></table>')
 
 
 def montar_html(ate_ano, ate_mes, stats, sessoes, alertas):
     pessoas = list(PROFISSIONAIS.values())
     titulo = f"Referência de horas por atividade — até {MESES[ate_mes - 1]} de {ate_ano}"
+    numero = {secao: i for i, secao in enumerate(SECOES, start=1)}
 
-    corpo = [f'<p style="margin:0 0 24px;font-size:12px;color:#888;line-height:1.6;">Média geral acumulada de horas '
-             f'por entrega. Cada média considera só as entregas daquela pessoa; “—” = sem entregas.</p>']
-    for numero, secao in enumerate(SECOES, start=1):
-        if numero > 1:
-            corpo.append(divider())
-        corpo += tabela_secao(numero, secao, stats.get(secao, {}), pessoas)
-    corpo += lista_pendencias(len(SECOES) + 1, alertas, sessoes)
-    corpo.append(f'<p style="margin:24px 0 0;font-size:11px;color:#aaa;line-height:1.6;">Entrega = todas as horas '
-                 f'de um item dentro de um projeto. Entra no cálculo quando o projeto é finalizado ou a etapa fica '
-                 f'{DIAS_SEM_LANCAMENTO} dias sem lançamentos; projetos cancelados não entram. Profissional pelo '
-                 f'Ref. Equipe, etapa pelo campo Etapa, item deduzido pela Descrição.</p>'
-                 '<p style="text-align:right;font-size:11px;color:#ccc;margin:24px 0 0;">'
-                 'Gerado automaticamente · Simplific</p>')
+    def bloco(conteudo):
+        return f'<div style="margin-bottom:16px;">{conteudo}</div>'
+
+    esquerda = "".join(bloco(bloco_padrao(numero[s], s, stats.get(s, {}), pessoas)) for s in (GERAL, ARQ, TRES_D))
+    direita = (bloco(bloco_padrao(numero[EXE], EXE, stats.get(EXE, {}), pessoas))
+               + bloco(bloco_interiores(numero[INT], stats.get(INT, {}), pessoas)))
+
+    corpo = ('<table style="width:100%;border-collapse:collapse;table-layout:fixed;"><tr>'
+             f'<td style="width:50%;vertical-align:top;padding-right:10px;">{esquerda}</td>'
+             f'<td style="width:50%;vertical-align:top;padding-left:10px;">{direita}</td></tr></table>'
+             + lista_pendencias(len(SECOES) + 1, alertas, sessoes)
+             + '<p style="margin:12px 0 0;font-size:9.5px;color:#aaa;line-height:1.5;">Média de horas por entrega '
+             '(todas as horas de um item em um projeto; reunião = média por reunião). Entra quando o projeto é '
+             f'finalizado ou a etapa fica {DIAS_SEM_LANCAMENTO} dias sem lançamentos. Cada média considera só as '
+             'entregas daquela pessoa; “—” = sem entregas. Linhas em cinza: descrição genérica.</p>')
 
     html = ('<!DOCTYPE html><html><head><meta charset="utf-8">'
-            '<meta name="viewport" content="width=device-width,initial-scale=1"></head>'
-            '<body style="margin:0;padding:0;background:#f0f0f0;'
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<style>@page { size: A4; margin: 12mm; } @media print { body { background:#fff !important; } }</style>'
+            '</head><body style="margin:0;padding:0;background:#f0f0f0;'
             'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;color:#1a1a1a;">'
-            '<div style="max-width:720px;margin:32px auto;">'
-            '<div style="background:#1a1a1a;padding:24px 28px;border-radius:10px 10px 0 0;">'
-            '<p style="margin:0;color:#fff;font-size:20px;font-weight:600;">'
-            'Referência de Horas para Orçamento</p>'
-            f'<p style="margin:6px 0 0;color:#888;font-size:13px;">'
-            f'Acumulado até {MESES[ate_mes - 1]} de {ate_ano}</p></div>'
-            f'<div style="background:#fff;padding:28px;border-radius:0 0 10px 10px;">{"".join(corpo)}</div>'
+            '<div style="max-width:760px;margin:24px auto;">'
+            '<div style="background:#1a1a1a;padding:16px 22px;border-radius:8px 8px 0 0;">'
+            '<p style="margin:0;color:#fff;font-size:17px;font-weight:600;">Referência de Horas para Orçamento</p>'
+            f'<p style="margin:3px 0 0;color:#888;font-size:12px;">Acumulado até {MESES[ate_mes - 1]} de {ate_ano}</p>'
+            '</div>'
+            f'<div style="background:#fff;padding:18px 22px;border-radius:0 0 8px 8px;">{corpo}</div>'
             '</div></body></html>')
     return titulo, html
 
