@@ -203,16 +203,24 @@ def ambiente_de(texto):
 def classificar(etapa, atividade, descricao):
     """
     Devolve (seção, ambiente, item) ou None quando não dá para classificar.
-    ambiente só é usado em Interiores; nas outras seções é None.
-    O campo Atividade, se um dia for preenchido, é lido junto com a Descrição.
+    ambiente só é usado em Interiores e para separar entregas no 3D.
+
+    A Descrição decide primeiro. O campo Atividade só entra quando a Descrição
+    sozinha não basta (ex.: Descrição "Cozinha" + Atividade "Detalhamento").
     """
     secao = ETAPAS.get(etapa)
     if not secao:
         return None
-    t = sem_acento(f"{atividade or ''} {descricao or ''}")
-    if not t:
-        return None
+    for texto in (descricao, f"{atividade or ''} {descricao or ''}"):
+        t = sem_acento(texto)
+        if t:
+            classe = classificar_texto(secao, t)
+            if classe:
+                return classe
+    return None
 
+
+def classificar_texto(secao, t):
     # Geral e 3D: valem para qualquer etapa.
     if tem(r"briefing", t):
         return GERAL, None, "Reunião de Briefing"
