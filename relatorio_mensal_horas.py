@@ -2,19 +2,22 @@
 Referência de horas por atividade — LSC Arquitetura
 
 Lê TODOS os registros da base "Controle de Horas LSC" no Notion e monta a média
-geral acumulada de horas por tipo de atividade, separada por profissional
-(Lícia e Willian). A cada execução o cálculo é refeito do zero com todo o
-histórico, então as entregas concluídas no mês entram automaticamente no
-acumulado e atualizam quantidade, média, mediana, mínimo e máximo.
+geral acumulada de horas por etapa (Arquitetônico, Executivo, Interiores),
+atividade e profissional (Lícia e Willian), para usar em orçamentos. A cada
+execução o cálculo é refeito do zero com todo o histórico, então as entregas
+concluídas entram automaticamente no acumulado.
 
-Uma "entrega" é a soma de todas as horas de uma atividade dentro de um projeto,
-separada por profissional. Ex.: todo o Detalhamento de Marcenaria do Willian no
-projeto X = 1 entrega dele.
+Uma "entrega" é a soma de todas as horas de uma atividade dentro de uma etapa de
+um projeto, separada por profissional. Ex.: todo o Detalhamento de Marcenaria do
+Willian na etapa Interiores do projeto X = 1 entrega dele.
+
+As médias de Lícia e Willian são calculadas cada uma sobre as entregas em que
+aquela pessoa trabalhou, e nunca são somadas entre si.
 
 Uso:
-    python relatorio_horas.py                     # até o fim do mês anterior, envia e-mail
-    python relatorio_horas.py --ate 2026-10       # até o fim de outubro de 2026
-    python relatorio_horas.py --salvar teste.html # gera o HTML sem enviar
+    python relatorio_mensal_horas.py                     # até o fim do mês anterior, envia e-mail
+    python relatorio_mensal_horas.py --ate 2026-10       # até o fim de outubro de 2026
+    python relatorio_mensal_horas.py --salvar teste.html # gera o HTML (e o CSV ao lado) sem enviar
 
 Variáveis de ambiente:
     NOTION_TOKEN        token da integração do Notion
@@ -26,6 +29,8 @@ Usa os mesmos secrets do relatorio.py e do relatorio_semanal.py, que não são a
 """
 
 import argparse
+import csv
+import io
 import json
 import os
 import re
@@ -36,6 +41,7 @@ import unicodedata
 import urllib.request
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -57,48 +63,69 @@ USUARIOS = {
     "6550ee09-a47c-47ee-ace3-a14b055cbb8b": "15cfab6becce802abbf2c08bae46e19d",
 }
 
-# Uma entrega só entra na média quando está concluída: o projeto foi finalizado
-# ou a atividade ficou esse tempo sem nenhum lançamento novo naquele projeto.
-STATUS_PROJETO_CONCLUIDO = {"Finalizado", "Projeto Finalizado | Execução"}
-
 # Etapas mostradas no relatório (valor do campo Etapa -> título da seção), nesta ordem.
 ETAPAS = {
     "I - Projeto Arquitetônico": "Arquitetônico",
     "II - Projeto Executivo": "Executivo",
     "III - Projeto de Interiores": "Interiores",
 }
+
+# Uma entrega só entra na média quando a etapa daquele projeto terminou: o projeto
+# foi finalizado, ou a etapa inteira ficou esse tempo sem nenhum lançamento.
+# Projetos cancelados ficam de fora (o trabalho foi interrompido no meio).
+STATUS_PROJETO_CONCLUIDO = {"Finalizado", "Projeto Finalizado | Execução"}
+STATUS_PROJETO_CANCELADO = {"Cancelado"}
 DIAS_SEM_LANCAMENTO = 30
 
 # Registros acima disso são tratados como erro de digitação (ex.: Fim no dia errado).
 DURACAO_MAXIMA_HORAS = 12
 
-# O campo "Atividade" está vazio na base, então o tipo é deduzido pela "Descrição".
-# Se a Atividade for preenchida um dia, ela tem prioridade.
+# Se o campo "Atividade" for preenchido um dia, ele tem prioridade sobre a Descrição.
+# "Detalhamento" é genérico demais, então nesse caso a Descrição ainda decide.
+ATIVIDADE_NOTION = {
+    "3D / Render": "Criação de 3D",
+    "Compatibilização": "Compatibilização",
+    "Correção": "Correção / Alteração",
+    "Reunião": "Reunião",
+    "Visita Técnica": "Visita / Obra",
+    "Financeiro": "Gestão / Financeiro",
+    "Planejamento": "Gestão / Financeiro",
+}
+
+# Como o campo "Atividade" está vazio na base, o tipo é deduzido pela "Descrição".
 # A primeira regra que casar vence, então a ordem importa.
 # Os padrões são comparados sem acento e em minúsculas.
 REGRAS_TIPO = [
-    ("Reunião",                               r"reuniao"),
-    ("Correção / Alteração",                  r"correc|alterac|ajuste|revisao"),
-    ("Criação de 3D",                         r"\b3d\b|render"),
-    ("Compatibilização",                      r"compatibiliz"),
-    ("Memoriais",                             r"memoria"),
-    ("Detalhamento de Marcenaria",            r"marcenaria"),
-    ("Detalhamento de Obra",                  r"det\.? de obra|\(obra\)"),
-    ("Detalhamento técnico (esquadrias, muro, cortinas…)",
-                                              r"esquadria|serralheria|muro|calcada|cortina|vidro|escada|gesso|piso"),
-    ("Projeto Executivo",                     r"executivo|^pe\b|pontos|iluminac"),
-    ("Projeto Arquitetônico / Reforma",       r"arquitetonico|reforma|ampliac|fachada|aprovac|legal"),
-    ("Ambientação / Estudo Preliminar",       r"ambienta|layout|estudo|^ep\b"),
-    ("Levantamento de Dados",                 r"levantamento|^ld\b|medic"),
-    ("Visita / Obra",                         r"obra|visita"),
-    ("Simplific",                             r"conteudo|post|simplific|material"),
-    ("Gestão / Financeiro",                   r"financeiro|orcamento|gestao|planejamento|central"),
-    # Só o nome do ambiente ("Closet", "Cozinha", "Quarto Casal"...)
-    ("Detalhamento por ambiente",             r"quarto|suite|banheiro|lavabo|cozinha|copa|sala|closet|varanda|"
-                                              r"lazer|gourmet|servico|brinquedoteca|circulacao|deck|piscina|"
-                                              r"escritorio|despensa|hall|garagem|area"),
+    ("Reunião",                         r"reuniao"),
+    # Retrabalho fica separado da produção, em qualquer atividade.
+    ("Correção / Alteração",            r"correc|alterac|ajuste|revisao"),
+    ("Compatibilização",                r"compatibiliz"),
+    ("Apresentação / Entrega",          r"apresentac|entrega|termo"),
+    # Base/modelagem (montar o modelo) é diferente de 3D de ambiente (criação e render).
+    ("Modelagem 3D (base)",             r"\bbases? 3d|modelagem"),
+    ("Criação de 3D",                   r"\b3d\b|render"),
+    ("Memoriais",                       r"memoria"),
+    ("Detalhamento de Marcenaria",      r"marcenaria"),
+    ("Detalhamento de Obra",            r"det(\.|alhamento)? de obra|\(obra\)"),
+    ("Plantas técnicas (pontos, iluminação, gesso, piso)",
+                                        r"pontos|iluminac|gesso|piso"),
+    ("Detalhamento técnico (esquadrias, muro, serralheria, cortinas)",
+                                        r"esquadria|serralheria|muro|calcada|cortina|vidro|escada|porta|portao|portoes|"
+                                        r"pergolado"),
+    ("Projeto Executivo (geral)",       r"executivo|^pe\b"),
+    ("Projeto Arquitetônico / Reforma", r"arquitetonic|reforma|ampliac|fachada|aprovac|legal|uso misto"),
+    ("Ambientação / Estudo Preliminar", r"ambienta|layout|estudo|^ep\b|^criacao"),
+    ("Levantamento de Dados",           r"levantamento|^ld\b|medic"),
+    ("Visita / Obra",                   r"obra|visita"),
+    ("Simplific",                       r"conteudo|post|simplific|material|site|combos"),
+    ("Gestão / Financeiro",             r"financeiro|orcamento|gestao|planejamento|central|boleto|\bata\b"),
+    # Só o nome do ambiente ("Closet", "Cozinha", "Quarto Casal"...), sem dizer se é obra ou marcenaria.
+    ("Detalhamento por ambiente (obra e marcenaria)",
+                                        r"quarto|suite|banheiro|lavabo|cozinha|copa|sala|closet|varanda|"
+                                        r"lazer|gourmet|servico|brinquedoteca|circulacao|deck|piscina|"
+                                        r"escritorio|despensa|deposi|oratorio|hall|garagem|area"),
 ]
-SEM_TIPO = "Outros (sem classificação)"
+SEM_TIPO = "Sem classificação"
 
 
 # ---------------------------------------------------------------- utilidades
@@ -109,19 +136,13 @@ def sem_acento(texto):
 
 
 def classificar(atividade, descricao):
-    if atividade:
-        return atividade
+    if atividade in ATIVIDADE_NOTION:
+        return ATIVIDADE_NOTION[atividade]
     alvo = sem_acento(descricao)
     for tipo, padrao in REGRAS_TIPO:
         if re.search(padrao, alvo):
             return tipo
     return SEM_TIPO
-
-
-def id_pagina(url_ou_id):
-    """Extrai o id de 32 caracteres de uma URL ou id do Notion."""
-    achado = re.findall(r"[0-9a-f]{32}", (url_ou_id or "").replace("-", ""))
-    return achado[-1] if achado else None
 
 
 def parse_iso(valor):
@@ -135,10 +156,8 @@ def horas(minutos):
     return f"{minutos // 60}h{minutos % 60:02d}"
 
 
-def reais(valor):
-    if valor is None:
-        return "—"
-    return "R$ " + f"{valor:,.0f}".replace(",", ".")
+def decimal_br(valor, casas=1):
+    return "" if valor is None else f"{valor:.{casas}f}".replace(".", ",")
 
 
 MESES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho",
@@ -227,11 +246,10 @@ def buscar_registros():
         for pagina in resp["results"]:
             p = pagina["properties"]
             projetos = ids_relacao(p.get("2026 | Projetos"))
-            equipe = ids_relacao(p.get("Ref. Equipe"))
             registros.append({
                 "url": pagina["url"],
                 "criado_por": (p.get("Criado por") or {}).get("created_by", {}).get("id"),
-                "equipe": equipe,
+                "equipe": ids_relacao(p.get("Ref. Equipe")),
                 "projeto": projetos[0] if projetos else None,
                 "status_projeto": status_rollup(p.get("Status do Projeto")),
                 "etapa": texto_de(p.get("Etapa")),
@@ -256,37 +274,40 @@ def validar(registros, corte):
     duplicados são ignorados e, quando dois registros da mesma pessoa se
     sobrepõem, o trecho repetido só é contado uma vez. O custo é ajustado na
     mesma proporção dos minutos.
+
+    Alerta = (profissional, descrição, início, problema, url, efeito, etapa),
+    com efeito "fora" (não contado), "parcial" ou "contado" (só conferir).
     """
     alertas = []
     por_pessoa = defaultdict(list)
 
+    def alerta(pessoa, r, motivo, efeito):
+        alertas.append((pessoa, r["descricao"] or "(sem descrição)", r["inicio"], motivo, r["url"], efeito,
+                        r.get("etapa")))
+
     for r in registros:
         if r["inicio"] and parse_iso(r["inicio"]) >= corte:
             continue
-        rotulo = r["descricao"] or "(sem descrição)"
         equipe = [e for e in r["equipe"] if e in PROFISSIONAIS]
         if len(equipe) != 1:
-            alertas.append(("—", rotulo, r["inicio"], "Ref. Equipe vazia ou com mais de uma pessoa", r["url"], "fora"))
+            alerta("—", r, "Ref. Equipe vazia ou com mais de uma pessoa", "fora")
             continue
         pessoa_id = equipe[0]
         pessoa = PROFISSIONAIS[pessoa_id]
 
         if not r["inicio"] or not r["fim"]:
-            alertas.append((pessoa, rotulo, r["inicio"], "sem horário de início ou de fim", r["url"], "fora"))
+            alerta(pessoa, r, "sem horário de início ou de fim", "fora")
             continue
         inicio, fim = parse_iso(r["inicio"]), parse_iso(r["fim"])
         minutos = (fim - inicio).total_seconds() / 60
         if minutos <= 0:
-            alertas.append((pessoa, rotulo, r["inicio"], "fim antes do início", r["url"], "fora"))
+            alerta(pessoa, r, "fim antes do início", "fora")
             continue
         if minutos > DURACAO_MAXIMA_HORAS * 60:
-            alertas.append((pessoa, rotulo, r["inicio"],
-                            f"{horas(minutos)} seguidas (fim provavelmente no dia errado)", r["url"], "fora"))
+            alerta(pessoa, r, f"{horas(minutos)} seguidas (fim provavelmente no dia errado)", "fora")
             continue
         if r["criado_por"] and USUARIOS.get(r["criado_por"]) not in (None, pessoa_id):
-            alertas.append((pessoa, rotulo, r["inicio"],
-                            "lançado por outra pessoa — conferir se as horas são mesmo de " + pessoa,
-                            r["url"], "contado"))
+            alerta(pessoa, r, f"lançado por outra pessoa — conferir se as horas são de {pessoa}", "contado")
 
         por_pessoa[pessoa].append({**r, "pessoa": pessoa, "ini": inicio, "fim_dt": fim, "min": minutos})
 
@@ -296,11 +317,9 @@ def validar(registros, corte):
         vistos = set()
         maior_fim, dono_maior_fim = None, None
         for s in lista:
-            rotulo = s["descricao"] or "(sem descrição)"
             chave = (s["ini"], s["fim_dt"])
             if chave in vistos:
-                alertas.append((pessoa, rotulo, s["inicio"], "duplicado (mesmo início e fim de outro registro)",
-                                s["url"], "fora"))
+                alerta(pessoa, s, "duplicado (mesmo início e fim de outro registro)", "fora")
                 continue
             vistos.add(chave)
 
@@ -308,12 +327,11 @@ def validar(registros, corte):
             if maior_fim and s["ini"] < maior_fim:
                 contar_de = min(maior_fim, s["fim_dt"])
                 repetido = (contar_de - s["ini"]).total_seconds() / 60
-                alertas.append((pessoa, rotulo, s["inicio"],
-                                f"sobreposto a “{dono_maior_fim}” — {horas(repetido)} contadas só uma vez",
-                                s["url"], "parcial"))
+                alerta(pessoa, s, f"sobreposto a “{dono_maior_fim}” — {horas(repetido)} contadas uma vez só",
+                       "parcial")
             minutos = (s["fim_dt"] - contar_de).total_seconds() / 60
             if not maior_fim or s["fim_dt"] > maior_fim:
-                maior_fim, dono_maior_fim = s["fim_dt"], rotulo
+                maior_fim, dono_maior_fim = s["fim_dt"], s["descricao"] or "(sem descrição)"
             if minutos <= 0:
                 continue
             custo = s["custo"] * minutos / s["min"] if s["custo"] is not None else None
@@ -329,12 +347,16 @@ def validar(registros, corte):
 def entregas_concluidas(sessoes, corte):
     """
     Agrupa as sessões em entregas (projeto + etapa + atividade + profissional) e
-    devolve só as concluídas até a data de corte. Sessões sem projeto ou fora das
-    etapas do relatório ficam de fora.
+    devolve só as de etapas concluídas até a data de corte.
+
+    A conclusão é decidida pela etapa do projeto inteira, não por atividade: assim
+    uma atividade que só ficou parada (esperando o cliente, por exemplo) não entra
+    na média pela metade enquanto o resto da etapa continua.
     """
-    grupos = defaultdict(lambda: {"min": 0.0, "custo": 0.0, "sem_custo": False, "ultimo": None, "status": None})
+    grupos = defaultdict(lambda: {"min": 0.0, "custo": 0.0, "sem_custo": False})
+    etapa_info = defaultdict(lambda: {"ultimo": None, "status": None})
     for s in sessoes:
-        if not s["projeto"] or s.get("etapa") not in ETAPAS:
+        if not s["projeto"] or s.get("etapa") not in ETAPAS or s["tipo"] == SEM_TIPO:
             continue
         g = grupos[(s["projeto"], s["etapa"], s["tipo"], s["pessoa"])]
         g["min"] += s["min"]
@@ -342,193 +364,180 @@ def entregas_concluidas(sessoes, corte):
             g["sem_custo"] = True
         else:
             g["custo"] += s["custo"]
-        g["ultimo"] = max(g["ultimo"] or s["fim_dt"], s["fim_dt"])
-        g["status"] = g["status"] or s["status_projeto"]
-
-    # A conclusão é decidida por projeto + etapa + atividade (vale para os dois profissionais).
-    ultimo_atividade = defaultdict(lambda: None)
-    for (projeto, etapa, tipo, _), g in grupos.items():
-        atual = ultimo_atividade[(projeto, etapa, tipo)]
-        ultimo_atividade[(projeto, etapa, tipo)] = max(atual or g["ultimo"], g["ultimo"])
+        info = etapa_info[(s["projeto"], s["etapa"])]
+        info["ultimo"] = max(info["ultimo"] or s["fim_dt"], s["fim_dt"])
+        info["status"] = info["status"] or s["status_projeto"]
 
     limite = corte - timedelta(days=DIAS_SEM_LANCAMENTO)
     concluidas = {}
     for (projeto, etapa, tipo, pessoa), g in grupos.items():
-        finalizado = g["status"] in STATUS_PROJETO_CONCLUIDO
-        parado = ultimo_atividade[(projeto, etapa, tipo)] <= limite
-        if finalizado or parado:
+        info = etapa_info[(projeto, etapa)]
+        if info["status"] in STATUS_PROJETO_CANCELADO:
+            continue
+        if info["status"] in STATUS_PROJETO_CONCLUIDO or info["ultimo"] <= limite:
             concluidas[(projeto, etapa, tipo, pessoa)] = {"min": g["min"],
                                                           "custo": None if g["sem_custo"] else g["custo"]}
     return concluidas
 
 
-def estatisticas(valores, custos):
-    custos = [c for c in custos if c is not None]
-    return {
-        "n": len(valores),
-        "media": statistics.mean(valores),
-        "mediana": statistics.median(valores),
-        "min": min(valores),
-        "max": max(valores),
-        "custo": statistics.mean(custos) if custos else None,
-    }
-
-
 def calcular(entregas):
-    """stats[etapa][tipo][pessoa ou 'Total'] = estatísticas das entregas concluídas."""
-    por_pessoa = defaultdict(lambda: ([], []))
-    total = defaultdict(lambda: {"min": 0.0, "custo": 0.0, "sem_custo": False})
+    """
+    Devolve stats[etapa][tipo] com:
+      "entregas": nº de projetos com aquela atividade concluída na etapa
+      pessoa -> estatísticas só das entregas daquela pessoa
+    """
+    minutos = defaultdict(list)
+    custos = defaultdict(list)
+    projetos = defaultdict(set)
     for (projeto, etapa, tipo, pessoa), e in entregas.items():
-        minutos, custos = por_pessoa[(etapa, tipo, pessoa)]
-        minutos.append(e["min"])
-        custos.append(e["custo"])
-        t = total[(projeto, etapa, tipo)]
-        t["min"] += e["min"]
-        if e["custo"] is None:
-            t["sem_custo"] = True
-        else:
-            t["custo"] += e["custo"]
+        minutos[(etapa, tipo, pessoa)].append(e["min"])
+        custos[(etapa, tipo, pessoa)].append(e["custo"])
+        projetos[(etapa, tipo)].add(projeto)
 
     stats = defaultdict(lambda: defaultdict(dict))
-    for (etapa, tipo, pessoa), (minutos, custos) in por_pessoa.items():
-        stats[etapa][tipo][pessoa] = estatisticas(minutos, custos)
-    totais = defaultdict(lambda: ([], []))
-    for (projeto, etapa, tipo), t in total.items():
-        totais[(etapa, tipo)][0].append(t["min"])
-        totais[(etapa, tipo)][1].append(None if t["sem_custo"] else t["custo"])
-    for (etapa, tipo), (minutos, custos) in totais.items():
-        stats[etapa][tipo]["Total"] = estatisticas(minutos, custos)
+    for (etapa, tipo), conjunto in projetos.items():
+        stats[etapa][tipo]["entregas"] = len(conjunto)
+    for (etapa, tipo, pessoa), valores in minutos.items():
+        com_custo = [c for c in custos[(etapa, tipo, pessoa)] if c is not None]
+        stats[etapa][tipo][pessoa] = {
+            "n": len(valores),
+            "media": statistics.mean(valores),
+            "mediana": statistics.median(valores),
+            "min": min(valores),
+            "max": max(valores),
+            "total": sum(valores),
+            "custo": statistics.mean(com_custo) if com_custo else None,
+        }
     return stats
+
+
+def ordem_tipos(stats_etapa):
+    return sorted(stats_etapa, key=lambda t: (-stats_etapa[t]["entregas"], t))
 
 
 # ---------------------------------------------------------------- e-mail
 
 ESTILO = """
-body{font-family:Arial,Helvetica,sans-serif;color:#2b2b2b;font-size:14px;margin:0;padding:24px;background:#faf8f5}
-.box{max-width:820px;margin:0 auto;background:#fff;border:1px solid #ece7df;border-radius:12px;padding:28px}
-h1{font-size:21px;margin:0 0 4px} h2{font-size:16px;margin:32px 0 6px}
-p.sub{color:#777;margin:0 0 16px;font-size:13px}
-h2.etapa{font-size:18px;margin:40px 0 4px;padding-bottom:8px;border-bottom:3px solid #c9a97c}
-h3{font-size:14px;margin:22px 0 6px;color:#555}
-td.pessoa{color:#777;font-size:13px}
-tr.grupo td{border-top:2px solid #f0ebe3}
-table.t{border-collapse:collapse;width:100%}
-.t th,.t td{padding:8px 10px;border-bottom:1px solid #eee;text-align:right;white-space:nowrap}
-.t th{font-size:12px;color:#777;font-weight:bold;border-bottom:2px solid #e6e0d6}
-.t th:first-child,.t td:first-child{text-align:left;white-space:normal}
-.t td.ref{font-weight:bold;font-size:15px}
-.n{color:#999;font-size:11px;font-weight:normal;display:block}
-.muted{color:#bbb}
-.bar{background:#c9a97c;height:6px;border-radius:3px;display:inline-block;vertical-align:middle}
-.alerta td{font-size:12px} .alerta td:first-child{white-space:nowrap}
-.tag{font-size:11px;padding:2px 6px;border-radius:4px;background:#fdecea;color:#a33}
-.tag.p{background:#fff4e0;color:#8a5a00} .tag.c{background:#eef3fb;color:#2b5797}
-.nota{color:#888;font-size:12px;line-height:1.5;margin-top:28px;border-top:1px solid #eee;padding-top:14px}
+body{font-family:Arial,Helvetica,sans-serif;color:#2b2b2b;font-size:14px;margin:0;padding:20px;background:#faf8f5}
+.box{max-width:680px;margin:0 auto;background:#fff;border:1px solid #ece7df;border-radius:12px;padding:24px 26px}
+h1{font-size:19px;margin:0 0 4px} p.sub{color:#888;margin:0 0 6px;font-size:12px;line-height:1.5}
+h2{font-size:15px;margin:26px 0 6px;padding-bottom:6px;border-bottom:2px solid #c9a97c}
+table{border-collapse:collapse;width:100%}
+th,td{padding:7px 8px;border-bottom:1px solid #f0ece6;text-align:right;white-space:nowrap}
+th{font-size:11px;color:#888;font-weight:bold;text-transform:uppercase;letter-spacing:.3px}
+th:first-child,td:first-child{text-align:left;white-space:normal}
+td.h{font-weight:bold;font-size:15px}
+td.h small{display:block;font-weight:normal;font-size:10px;color:#aaa}
+.muted{color:#ccc}
+.vazio{color:#999;font-size:13px;margin:4px 0 0}
+.pend{font-size:12px;color:#555;line-height:1.6;margin:4px 0 0;padding-left:18px}
+.pend a{color:#2b5797}
+.nota{color:#999;font-size:11px;line-height:1.5;margin-top:24px;border-top:1px solid #eee;padding-top:10px}
 """
 
 
-def celula_ref(st):
+def celula_media(st, entregas):
     if not st:
         return '<td class="muted">—</td>'
-    return f'<td class="ref">{horas(st["media"])}<span class="n">{st["n"]} entrega{"s" * (st["n"] != 1)}</span></td>'
+    base = f"<small>em {st['n']}</small>" if st["n"] != entregas else ""
+    return f'<td class="h">{horas(st["media"])}{base}</td>'
 
 
-def secao_etapa(nome, stats_etapa, pessoas):
-    tipos = sorted(stats_etapa, key=lambda t: -stats_etapa[t]["Total"]["n"])
-    tipos = [t for t in tipos if t != SEM_TIPO] + ([SEM_TIPO] if SEM_TIPO in stats_etapa else [])
-    html = [f"<h2 class='etapa'>{nome}</h2>"]
+def tabela_etapa(nome, stats_etapa, pessoas):
+    html = [f"<h2>{nome}</h2>"]
+    tipos = ordem_tipos(stats_etapa)
     if not tipos:
-        html.append("<p class='sub'>Ainda não há entregas concluídas nesta etapa.</p>")
+        html.append("<p class='vazio'>Ainda não há entregas concluídas nesta etapa.</p>")
         return html
-
-    # Tabela de referência
-    maior = max(stats_etapa[t]["Total"]["media"] for t in tipos) or 1
-    html.append("<h3>Referência para orçamento — média por entrega</h3>"
-                "<table class='t'><tr><th>Atividade</th>"
-                + "".join(f"<th>{p}</th>" for p in pessoas)
-                + "<th>Total</th><th>Custo médio</th><th></th></tr>")
+    html.append("<table><tr><th>Atividade</th><th>Entregas</th>"
+                + "".join(f"<th>Média {p}</th>" for p in pessoas) + "</tr>")
     for t in tipos:
-        tot = stats_etapa[t]["Total"]
-        barra = int(110 * tot["media"] / maior)
-        html.append(f"<tr><td>{t}</td>"
-                    + "".join(celula_ref(stats_etapa[t].get(p)) for p in pessoas)
-                    + celula_ref(tot)
-                    + f"<td>{reais(tot['custo'])}</td>"
-                    f"<td><span class='bar' style='width:{barra}px'></span></td></tr>")
+        n = stats_etapa[t]["entregas"]
+        html.append(f"<tr><td>{t}</td><td>{n}</td>"
+                    + "".join(celula_media(stats_etapa[t].get(p), n) for p in pessoas) + "</tr>")
     html.append("</table>")
+    return html
 
-    # Detalhe por profissional
-    html.append("<h3>Detalhe por profissional</h3><table class='t'><tr><th>Atividade</th><th>Profissional</th>"
-                "<th>Entregas</th><th>Média</th><th>Mediana</th><th>Mínimo</th><th>Máximo</th>"
-                "<th>Custo médio</th></tr>")
-    for t in tipos:
-        participantes = [p for p in pessoas if p in stats_etapa[t]]
-        for i, p in enumerate(participantes):
-            st = stats_etapa[t][p]
-            nome_atividade = t if i == 0 else ""
-            html.append(f"<tr{' class=grupo' if i == 0 else ''}><td>{nome_atividade}</td>"
-                        f"<td class='pessoa' style='text-align:left'>{p}</td><td>{st['n']}</td>"
-                        f"<td><b>{horas(st['media'])}</b></td><td>{horas(st['mediana'])}</td>"
-                        f"<td>{horas(st['min'])}</td><td>{horas(st['max'])}</td>"
-                        f"<td>{reais(st['custo'])}</td></tr>")
-    html.append("</table>")
+
+def lista_pendencias(alertas, sessoes):
+    """Resumo final: registros inconsistentes e descrições sem classificação, com links."""
+    relevantes = [a for a in alertas if a[6] in ETAPAS]
+    sem_tipo = defaultdict(list)
+    for s in sessoes:
+        if s["tipo"] == SEM_TIPO and s.get("etapa") in ETAPAS:
+            sem_tipo[s["descricao"] or "(sem descrição)"].append(s)
+    if not relevantes and not sem_tipo:
+        return []
+
+    html = ["<h2>Para corrigir no Notion</h2>"]
+    if relevantes:
+        html.append(f"<p class='sub'><b>Registros inconsistentes ({len(relevantes)})</b> — "
+                    "os que estão fora do cálculo entram assim que forem corrigidos.</p><ul class='pend'>")
+        for pessoa, desc, inicio, motivo, url, efeito, _ in relevantes:
+            data = parse_iso(inicio).astimezone(FUSO).strftime("%d/%m/%y") if inicio else "sem data"
+            html.append(f"<li><a href='{url}'>{data} · {pessoa} · {desc}</a> — {motivo}</li>")
+        html.append("</ul>")
+    if sem_tipo:
+        html.append(f"<p class='sub' style='margin-top:12px'><b>Descrições sem classificação ({len(sem_tipo)})</b> — "
+                    "ficam fora das médias. Ajuste a descrição no Notion ou peça para incluir uma regra.</p>"
+                    "<ul class='pend'>")
+        for desc, lista in sorted(sem_tipo.items(), key=lambda kv: sem_acento(kv[0])):
+            recente = max(lista, key=lambda s: s["ini"])
+            qtd = f" ({len(lista)} registros)" if len(lista) > 1 else ""
+            html.append(f"<li><a href='{recente['url']}'>{desc}</a>{qtd}</li>")
+        html.append("</ul>")
     return html
 
 
 def montar_html(ate_ano, ate_mes, stats, sessoes, alertas):
     pessoas = list(PROFISSIONAIS.values())
-    titulo = f"Referência de horas por atividade — atualizada até {MESES[ate_mes - 1]} de {ate_ano}"
-    primeiro = min(s["ini"] for s in sessoes).astimezone(FUSO) if sessoes else None
-
+    titulo = f"Referência de horas por atividade — até {MESES[ate_mes - 1]} de {ate_ano}"
     html = [f"<html><head><meta charset='utf-8'><style>{ESTILO}</style></head><body><div class='box'>",
             f"<h1>{titulo}</h1>",
-            "<p class='sub'>Média geral acumulada de todas as entregas concluídas registradas no "
-            "Controle de Horas LSC" + (f", desde {MESES[primeiro.month - 1]} de {primeiro.year}" if primeiro else "")
-            + ", por etapa de projeto. Uma entrega é todo o tempo gasto em uma atividade dentro de um projeto. "
-            "“—” = o profissional não participa da atividade.</p>"]
-
+            "<p class='sub'>Média geral acumulada de horas por entrega, com todas as entregas concluídas do "
+            "Controle de Horas LSC. Cada média considera só as entregas em que aquela pessoa trabalhou "
+            "(“em N” quando foram menos que o total); “—” = não participa da atividade.</p>"]
     for etapa, nome in ETAPAS.items():
-        html += secao_etapa(nome, stats.get(etapa, {}), pessoas)
-
-    # Alertas
-    if alertas:
-        tags = {"fora": ("", "não contado"), "parcial": ("p", "contado em parte"), "contado": ("c", "conferir")}
-        html.append(f"<h2>Registros para conferir ({len(alertas)})</h2>"
-                    "<p class='sub'>Corrija no Notion; no próximo relatório eles entram no cálculo.</p>"
-                    "<table class='t alerta'><tr><th>Data</th><th>Profissional</th><th>Descrição</th>"
-                    "<th style='text-align:left'>Problema</th><th></th></tr>")
-        for pessoa, desc, inicio, motivo, url, efeito in alertas:
-            data = parse_iso(inicio).astimezone(FUSO).strftime("%d/%m/%y") if inicio else "—"
-            cls, rotulo = tags[efeito]
-            html.append(f"<tr><td>{data}</td><td>{pessoa}</td><td style='text-align:left'>{desc}</td>"
-                        f"<td style='text-align:left;white-space:normal'>{motivo} "
-                        f"<span class='tag {cls}'>{rotulo}</span></td>"
-                        f"<td><a href='{url}'>abrir</a></td></tr>")
-        html.append("</table>")
-
-    nao_classificadas = sorted({s["descricao"] or "(sem descrição)" for s in sessoes
-                                if s["tipo"] == SEM_TIPO and s.get("etapa") in ETAPAS})
-    html.append("<div class='nota'><b>Como os números são calculados.</b> "
-                "Profissional = Ref. Equipe. Etapa = campo Etapa do registro. Custo = fórmula Custo da base "
-                "(custo-hora de cada profissional). Tipo de atividade deduzido pela Descrição. Uma entrega entra "
-                f"na média quando o projeto é finalizado ou quando a atividade fica {DIAS_SEM_LANCAMENTO} dias sem "
-                "lançamentos naquele projeto. Registros sobrepostos têm o trecho repetido contado uma vez só; "
-                "duplicados e inconsistentes ficam de fora até serem corrigidos. Registros sem projeto ou de "
-                "outras etapas (Gestão, Assessoria, Simplific) não entram neste relatório."
-                + ("<br><br>Descrições sem classificação: " + ", ".join(nao_classificadas[:30])
-                   if nao_classificadas else "")
-                + "</div></div></body></html>")
+        html += tabela_etapa(nome, stats.get(etapa, {}), pessoas)
+    html += lista_pendencias(alertas, sessoes)
+    html.append("<p class='nota'>Entrega = todas as horas de uma atividade dentro da etapa de um projeto. "
+                f"Entra no cálculo quando o projeto é finalizado ou a etapa fica {DIAS_SEM_LANCAMENTO} dias "
+                "sem lançamentos; projetos cancelados não entram. Profissional pelo Ref. Equipe, etapa pelo campo "
+                "Etapa, atividade deduzida pela Descrição. Mediana, mínimo, máximo, horas totais e custo médio "
+                "estão na planilha anexa.</p></div></body></html>")
     return titulo, "\n".join(html)
 
 
-def enviar_email(assunto, html):
+def montar_csv(stats):
+    """Planilha anexa com os indicadores estatísticos (abre direto no Excel)."""
+    saida = io.StringIO()
+    w = csv.writer(saida, delimiter=";")
+    w.writerow(["Etapa", "Atividade", "Profissional", "Entregas", "Média (h)", "Mediana (h)",
+                "Mínimo (h)", "Máximo (h)", "Horas totais", "Custo médio por entrega (R$)"])
+    for etapa, nome in ETAPAS.items():
+        stats_etapa = stats.get(etapa, {})
+        for t in ordem_tipos(stats_etapa):
+            for p in PROFISSIONAIS.values():
+                st = stats_etapa[t].get(p)
+                if not st:
+                    continue
+                w.writerow([nome, t, p, st["n"], decimal_br(st["media"] / 60), decimal_br(st["mediana"] / 60),
+                            decimal_br(st["min"] / 60), decimal_br(st["max"] / 60), decimal_br(st["total"] / 60),
+                            decimal_br(st["custo"], 2)])
+    return saida.getvalue().encode("utf-8-sig")
+
+
+def enviar_email(assunto, html, planilha, nome_planilha):
     remetente = os.environ["GMAIL_USER"]
     destinatarios = [e.strip() for e in os.environ.get("EMAIL_DESTINO", remetente).split(",") if e.strip()]
-    msg = MIMEMultipart("alternative")
+    msg = MIMEMultipart("mixed")
     msg["Subject"] = assunto
     msg["From"] = remetente
     msg["To"] = ", ".join(destinatarios)
     msg.attach(MIMEText(html, "html", "utf-8"))
+    anexo = MIMEApplication(planilha, Name=nome_planilha)
+    anexo["Content-Disposition"] = f'attachment; filename="{nome_planilha}"'
+    msg.attach(anexo)
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
         smtp.login(remetente, os.environ["GMAIL_APP_PASSWORD"])
         smtp.sendmail(remetente, destinatarios, msg.as_string())
@@ -540,14 +549,15 @@ def gerar(registros, ano, mes):
     corte = datetime(ano + (mes == 12), mes % 12 + 1, 1, tzinfo=FUSO)
     sessoes, alertas = validar(registros, corte)
     stats = calcular(entregas_concluidas(sessoes, corte))
-    return montar_html(ano, mes, stats, sessoes, alertas)
+    assunto, html = montar_html(ano, mes, stats, sessoes, alertas)
+    return assunto, html, montar_csv(stats)
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--ate", help="último mês incluído, AAAA-MM (padrão: mês anterior)")
     parser.add_argument("--json", help="lê os registros de um arquivo JSON em vez do Notion (teste)")
-    parser.add_argument("--salvar", help="salva o HTML neste arquivo em vez de enviar e-mail")
+    parser.add_argument("--salvar", help="salva o HTML neste arquivo (e o CSV ao lado) em vez de enviar e-mail")
     args = parser.parse_args()
 
     if args.ate:
@@ -562,14 +572,18 @@ def main():
     else:
         registros = buscar_registros()
 
-    assunto, html = gerar(registros, ano, mes)
+    assunto, html, planilha = gerar(registros, ano, mes)
+    nome_planilha = f"referencia_horas_{ano}-{mes:02d}.csv"
 
     if args.salvar:
         with open(args.salvar, "w", encoding="utf-8") as f:
             f.write(html)
-        print(f"HTML salvo em {args.salvar}")
+        caminho_csv = os.path.join(os.path.dirname(args.salvar), nome_planilha)
+        with open(caminho_csv, "wb") as f:
+            f.write(planilha)
+        print(f"HTML salvo em {args.salvar} e planilha em {caminho_csv}")
     else:
-        enviar_email(assunto, html)
+        enviar_email(assunto, html, planilha, nome_planilha)
         print(f"E-mail enviado: {assunto}")
     print(f"{len(registros)} registros lidos.")
 
