@@ -162,7 +162,8 @@ AGRUPAR_AMBIENTE = {
 # (ficam separadas para não distorcer as médias dos itens).
 FORA_ESTRUTURA = {
     "reuniao": REUNIAO,
-    "executivo": "Projeto Executivo (descrição genérica)",
+    # "Projeto Executivo" / "PE" sem dizer qual planta.
+    "executivo": "Detalhamento (tipo de planta não especificado)",
     "3d": SEM_AMBIENTE_3D,
     "apresentacao": "Apresentação / ambientação",
     "compatibilizacao": "Compatibilização",
