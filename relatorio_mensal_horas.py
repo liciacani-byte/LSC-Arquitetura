@@ -114,7 +114,8 @@ ESTRUTURA = {
 # Linhas que não aparecem no relatório quando não fazem parte da estrutura da seção
 # (no 3D: "Outros ambientes" e "3D sem ambiente"; no Executivo: revisão, pintura e outros detalhamentos).
 OCULTOS = {"Outros ambientes", SEM_AMBIENTE_3D, REVISAO, "Planta de Pintura",
-           "Outros detalhamentos (fachada, serralheria, escada, obra)"}
+           "Outros detalhamentos (fachada, serralheria, escada, obra)",
+           "Detalhamento (tipo de planta não especificado)"}
 # Em Interiores, cada ambiente tem estes itens (a criação/3D fica na seção 3D).
 # A correção de Interiores fica numa linha só, para a etapa toda (não por ambiente).
 ATIVIDADES_AMBIENTE = ["Detalhamento de obra", "Detalhamento de marcenaria"]
@@ -636,9 +637,9 @@ def linhas_secao(secao, stats_secao):
         return linhas
 
     ordem_item = ATIVIDADES_AMBIENTE + [SEM_TIPO_AMBIENTE]
-    # Ambientes em ordem alfabética; "Ambiente não informado" sempre por último.
-    por_ambiente = sorted({k for k in stats_secao if k[0] is not None},
-                          key=lambda k: (k[0] == SEM_AMBIENTE, sem_acento(k[0]), ordem_item.index(k[1])))
+    # Ambientes em ordem alfabética; "Ambiente não informado" não aparece no relatório.
+    por_ambiente = sorted({k for k in stats_secao if k[0] is not None and k[0] != SEM_AMBIENTE},
+                          key=lambda k: (sem_acento(k[0]), ordem_item.index(k[1])))
     for ambiente, item in por_ambiente:
         linhas.append((ambiente, item, stats_secao[(ambiente, item)], item == SEM_TIPO_AMBIENTE))
     # Depois dos ambientes: os itens da etapa toda e, por último, o que está fora da estrutura.
