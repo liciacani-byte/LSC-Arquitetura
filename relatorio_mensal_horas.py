@@ -118,6 +118,9 @@ OCULTOS = {"Outros ambientes", SEM_AMBIENTE_3D, REVISAO, "Planta de Pintura",
 # Em Interiores, cada ambiente tem estes itens (a criação/3D fica na seção 3D).
 # A correção de Interiores fica numa linha só, para a etapa toda (não por ambiente).
 ATIVIDADES_AMBIENTE = ["Detalhamento de obra", "Detalhamento de marcenaria"]
+# O detalhamento de obra e de marcenaria de Interiores é sempre feito pelo Willian: as horas
+# contam para ele mesmo quando o registro ficou com outro Ref. Equipe.
+RESPONSAVEL_DETALHAMENTO_INTERIORES = "Willian"
 SEM_AMBIENTE = "Ambiente não informado"
 SEM_TIPO_AMBIENTE = "Detalhamento sem tipo (obra ou marcenaria)"
 TODA_ETAPA = "Toda a etapa"
@@ -556,7 +559,10 @@ def entregas_concluidas(sessoes, corte):
         secao, ambiente, item = s["classe"]
         if secao == GERAL and item == REUNIAO:
             ambiente = s["url"]  # cada reunião é uma entrega: a média é por reunião
-        g = grupos[(s["projeto"], secao, ambiente, item, s["pessoa"])]
+        pessoa = s["pessoa"]
+        if secao == INT and item in ATIVIDADES_AMBIENTE:
+            pessoa = RESPONSAVEL_DETALHAMENTO_INTERIORES  # quem faz esse detalhamento, seja qual for o Ref. Equipe
+        g = grupos[(s["projeto"], secao, ambiente, item, pessoa)]
         g["min"] += s["min"]
         if s["custo"] is None:
             g["sem_custo"] = True
