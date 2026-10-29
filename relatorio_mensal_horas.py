@@ -18,7 +18,7 @@ aquela pessoa trabalhou, e nunca são somadas entre si.
 Uso:
     python relatorio_mensal_horas.py                     # até o fim do mês anterior, envia e-mail
     python relatorio_mensal_horas.py --ate 2026-10       # até o fim de outubro de 2026
-    python relatorio_mensal_horas.py --salvar teste.html # gera o HTML (e o CSV ao lado) sem enviar
+    python relatorio_mensal_horas.py --salvar teste.html # gera o HTML sem enviar
 
 Variáveis de ambiente:
     NOTION_TOKEN        token da integração do Notion
@@ -30,8 +30,6 @@ Usa os mesmos secrets do relatorio.py e do relatorio_semanal.py, que não são a
 """
 
 import argparse
-import csv
-import io
 import json
 import os
 import re
@@ -42,7 +40,6 @@ import unicodedata
 import urllib.request
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -108,11 +105,13 @@ ESTRUTURA = {
           "Planta de Iluminação", "Planta de Gesso", "Paginação de Piso", "Detalhamento de Portas",
           "Detalhamento de Vidros", "Detalhamento de Cortinas", "Muro e Calçada", "Planta de Pintura",
           "Memorial de Iluminação e Pintura", CORRECAO],
-    # Ambientes em ordem alfabética; "Outros ambientes", base e revisão no final.
+    # Ambientes em ordem alfabética; base e revisão no final.
     TRES_D: sorted((nome for nome, _ in TIPOS_3D if nome != "Outros ambientes"),
                    key=lambda n: unicodedata.normalize("NFKD", n).encode("ascii", "ignore").lower())
-            + ["Outros ambientes", BASE_3D, REVISAO_3D],
+            + [BASE_3D, REVISAO_3D],
 }
+# Linhas do 3D que não aparecem no relatório.
+OCULTOS_3D = {"Outros ambientes", SEM_AMBIENTE_3D}
 # Em Interiores, cada ambiente tem estes itens (a criação/3D fica na seção 3D).
 # A correção de Interiores fica numa linha só, para a etapa toda (não por ambiente).
 ATIVIDADES_AMBIENTE = ["Detalhamento de obra", "Detalhamento de marcenaria"]
@@ -347,10 +346,6 @@ def horas(minutos):
         return "—"
     minutos = int(round(minutos))
     return f"{minutos // 60}h{minutos % 60:02d}"
-
-
-def decimal_br(valor, casas=1):
-    return "" if valor is None else f"{valor:.{casas}f}".replace(".", ",")
 
 
 MESES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho",
@@ -621,8 +616,7 @@ def linhas_secao(secao, stats_secao):
     if secao in ESTRUTURA:
         for item in ESTRUTURA[secao]:
             linhas.append((None, item, stats_secao.get((None, item)), False))
-        # "3D sem ambiente informado" não aparece no relatório.
-        extras = [k for k in stats_secao if k[1] not in ESTRUTURA[secao] and k[1] != SEM_AMBIENTE_3D]
+        extras = [k for k in stats_secao if k[1] not in ESTRUTURA[secao] and k[1] not in OCULTOS_3D]
         for ambiente, item in sorted(extras, key=lambda k: list(FORA_ESTRUTURA.values()).index(k[1])
                                      if k[1] in FORA_ESTRUTURA.values() else 99):
             linhas.append((ambiente, item, stats_secao[(ambiente, item)], True))
@@ -800,8 +794,7 @@ def montar_html(ate_ano, ate_mes, stats, sessoes, alertas):
     corpo.append(f'<p style="margin:24px 0 0;font-size:11px;color:#aaa;line-height:1.6;">Entrega = todas as horas '
                  f'de um item dentro de um projeto. Entra no cálculo quando o projeto é finalizado ou a etapa fica '
                  f'{DIAS_SEM_LANCAMENTO} dias sem lançamentos; projetos cancelados não entram. Profissional pelo '
-                 f'Ref. Equipe, etapa pelo campo Etapa, item deduzido pela Descrição. Mediana, mínimo, máximo, horas '
-                 f'totais e custo médio estão na planilha anexa.</p>'
+                 f'Ref. Equipe, etapa pelo campo Etapa, item deduzido pela Descrição.</p>'
                  '<p style="text-align:right;font-size:11px;color:#ccc;margin:24px 0 0;">'
                  'Gerado automaticamente · Simplific</p>')
 
@@ -820,35 +813,14 @@ def montar_html(ate_ano, ate_mes, stats, sessoes, alertas):
     return titulo, html
 
 
-def montar_csv(stats):
-    """Planilha anexa com os indicadores estatísticos (abre direto no Excel)."""
-    saida = io.StringIO()
-    w = csv.writer(saida, delimiter=";")
-    w.writerow(["Etapa", "Ambiente", "Atividade", "Profissional", "Entregas", "Média (h)", "Mediana (h)",
-                "Mínimo (h)", "Máximo (h)", "Horas totais", "Custo médio por entrega (R$)"])
-    for secao in SECOES:
-        for ambiente, item, dados, _ in linhas_secao(secao, stats.get(secao, {})):
-            for p in PROFISSIONAIS.values():
-                st = (dados or {}).get(p)
-                if not st:
-                    continue
-                w.writerow([secao, ambiente or "", item, p, st["n"], decimal_br(st["media"] / 60),
-                            decimal_br(st["mediana"] / 60), decimal_br(st["min"] / 60),
-                            decimal_br(st["max"] / 60), decimal_br(st["total"] / 60), decimal_br(st["custo"], 2)])
-    return saida.getvalue().encode("utf-8-sig")
-
-
-def enviar_email(assunto, html, planilha, nome_planilha):
+def enviar_email(assunto, html):
     remetente = os.environ["GMAIL_USER"]
     destinatarios = [e.strip() for e in os.environ.get("EMAIL_DESTINO", remetente).split(",") if e.strip()]
-    msg = MIMEMultipart("mixed")
+    msg = MIMEMultipart("alternative")
     msg["Subject"] = assunto
     msg["From"] = remetente
     msg["To"] = ", ".join(destinatarios)
     msg.attach(MIMEText(html, "html", "utf-8"))
-    anexo = MIMEApplication(planilha, Name=nome_planilha)
-    anexo["Content-Disposition"] = f'attachment; filename="{nome_planilha}"'
-    msg.attach(anexo)
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
         smtp.login(remetente, os.environ["GMAIL_APP_PASSWORD"])
         smtp.sendmail(remetente, destinatarios, msg.as_string())
@@ -860,15 +832,14 @@ def gerar(registros, ano, mes):
     corte = datetime(ano + (mes == 12), mes % 12 + 1, 1, tzinfo=FUSO)
     sessoes, alertas = validar(registros, corte)
     stats = calcular(entregas_concluidas(sessoes, corte))
-    assunto, html = montar_html(ano, mes, stats, sessoes, alertas)
-    return assunto, html, montar_csv(stats)
+    return montar_html(ano, mes, stats, sessoes, alertas)
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--ate", help="último mês incluído, AAAA-MM (padrão: mês anterior)")
     parser.add_argument("--json", help="lê os registros de um arquivo JSON em vez do Notion (teste)")
-    parser.add_argument("--salvar", help="salva o HTML neste arquivo (e o CSV ao lado) em vez de enviar e-mail")
+    parser.add_argument("--salvar", help="salva o HTML neste arquivo em vez de enviar e-mail")
     args = parser.parse_args()
 
     if args.ate:
@@ -883,18 +854,14 @@ def main():
     else:
         registros = buscar_registros()
 
-    assunto, html, planilha = gerar(registros, ano, mes)
-    nome_planilha = f"referencia_horas_{ano}-{mes:02d}.csv"
+    assunto, html = gerar(registros, ano, mes)
 
     if args.salvar:
         with open(args.salvar, "w", encoding="utf-8") as f:
             f.write(html)
-        caminho_csv = os.path.join(os.path.dirname(args.salvar), nome_planilha)
-        with open(caminho_csv, "wb") as f:
-            f.write(planilha)
-        print(f"HTML salvo em {args.salvar} e planilha em {caminho_csv}")
+        print(f"HTML salvo em {args.salvar}")
     else:
-        enviar_email(assunto, html, planilha, nome_planilha)
+        enviar_email(assunto, html)
         print(f"E-mail enviado: {assunto}")
     print(f"{len(registros)} registros lidos.")
 
