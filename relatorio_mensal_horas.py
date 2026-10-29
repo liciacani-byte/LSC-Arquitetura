@@ -114,9 +114,14 @@ ESTRUTURA = {
             + ["Outros ambientes", BASE_3D, REVISAO_3D],
 }
 # Em Interiores, cada ambiente tem estes itens (a criação/3D fica na seção 3D).
-ATIVIDADES_AMBIENTE = ["Detalhamento de obra", "Detalhamento de marcenaria", "Correção"]
+# A correção de Interiores fica numa linha só, para a etapa toda (não por ambiente).
+ATIVIDADES_AMBIENTE = ["Detalhamento de obra", "Detalhamento de marcenaria"]
 SEM_AMBIENTE = "Ambiente não informado"
 SEM_TIPO_AMBIENTE = "Detalhamento sem tipo (obra ou marcenaria)"
+TODA_ETAPA = "Toda a etapa"
+# Ambientes que normalmente não têm obra: detalhamento sem tipo conta como marcenaria.
+SO_MARCENARIA = {"Closet", "Circulação", "Depósito", "Despensa", "Sala de Jantar", "Sala de TV / Estar",
+                 "Outras salas"}
 
 # Ambientes reconhecidos na Descrição (primeiro que casar vence; padrões sem acento).
 AMBIENTES = [
@@ -305,7 +310,7 @@ def classificar_3d(t, secao):
 def classificar_interiores(t):
     ambiente = ambiente_de(t)
     if tem(r"correc|revisao|ajuste|alterac", t):
-        item = "Correção"
+        return INT, None, CORRECAO
     elif tem(r"marcenaria", t):
         item = "Detalhamento de marcenaria"
     elif tem(r"det(\.|alhamento)? de obra|\(obra\)|\bobra\b", t) and not tem(r"visita|relatorio", t):
@@ -318,6 +323,8 @@ def classificar_interiores(t):
         return INT, None, FORA_ESTRUTURA["memoriais"]
     elif tem(r"cortina", t):
         return INT, None, FORA_ESTRUTURA["cortinas"]
+    elif ambiente in SO_MARCENARIA:
+        item = "Detalhamento de marcenaria"  # ambiente sem obra: só o nome já indica marcenaria
     elif ambiente:
         item = SEM_TIPO_AMBIENTE  # só o nome do ambiente, sem dizer se é obra ou marcenaria
     else:
@@ -608,7 +615,8 @@ def linhas_secao(secao, stats_secao):
     if secao in ESTRUTURA:
         for item in ESTRUTURA[secao]:
             linhas.append((None, item, stats_secao.get((None, item)), False))
-        extras = [k for k in stats_secao if k[1] not in ESTRUTURA[secao]]
+        # "3D sem ambiente informado" não aparece no relatório.
+        extras = [k for k in stats_secao if k[1] not in ESTRUTURA[secao] and k[1] != SEM_AMBIENTE_3D]
         for ambiente, item in sorted(extras, key=lambda k: list(FORA_ESTRUTURA.values()).index(k[1])
                                      if k[1] in FORA_ESTRUTURA.values() else 99):
             linhas.append((ambiente, item, stats_secao[(ambiente, item)], True))
@@ -620,7 +628,11 @@ def linhas_secao(secao, stats_secao):
                           key=lambda k: (k[0] == SEM_AMBIENTE, sem_acento(k[0]), ordem_item.index(k[1])))
     for ambiente, item in por_ambiente:
         linhas.append((ambiente, item, stats_secao[(ambiente, item)], item == SEM_TIPO_AMBIENTE))
-    extras = sorted((k for k in stats_secao if k[0] is None), key=lambda k: list(FORA_ESTRUTURA.values()).index(k[1]))
+    # Depois dos ambientes: a Correção da etapa toda e, por último, o que está fora da estrutura.
+    if (None, CORRECAO) in stats_secao:
+        linhas.append((TODA_ETAPA, CORRECAO, stats_secao[(None, CORRECAO)], False))
+    extras = sorted((k for k in stats_secao if k[0] is None and k[1] != CORRECAO),
+                    key=lambda k: list(FORA_ESTRUTURA.values()).index(k[1]))
     for ambiente, item in extras:
         linhas.append((None, item, stats_secao[(ambiente, item)], True))
     return linhas
