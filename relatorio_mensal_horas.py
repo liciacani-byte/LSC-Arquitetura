@@ -108,8 +108,10 @@ ESTRUTURA = {
           "Planta de Iluminação", "Planta de Gesso", "Paginação de Piso", "Detalhamento de Portas",
           "Detalhamento de Vidros", "Detalhamento de Cortinas", "Muro e Calçada", "Planta de Pintura",
           "Memorial de Iluminação e Pintura", CORRECAO],
-    TRES_D: ["Fachada", "Cozinha", "Sala", "Quarto", "Banheiro / Lavabo", "Área de Serviço", "Área Externa / Lazer",
-             "Closet", "Escritório", "Outros ambientes", BASE_3D, REVISAO_3D],
+    # Ambientes em ordem alfabética; "Outros ambientes", base e revisão no final.
+    TRES_D: sorted((nome for nome, _ in TIPOS_3D if nome != "Outros ambientes"),
+                   key=lambda n: unicodedata.normalize("NFKD", n).encode("ascii", "ignore").lower())
+            + ["Outros ambientes", BASE_3D, REVISAO_3D],
 }
 # Em Interiores, cada ambiente tem estes itens (a criação/3D fica na seção 3D).
 ATIVIDADES_AMBIENTE = ["Detalhamento de obra", "Detalhamento de marcenaria", "Correção"]
