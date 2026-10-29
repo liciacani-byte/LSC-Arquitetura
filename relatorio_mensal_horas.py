@@ -66,7 +66,8 @@ USUARIOS = {
 
 # Campo Etapa do registro -> seção do relatório. Registros de outras etapas
 # (Gestão, Assessoria, Simplific) não entram.
-ARQ, EXE, INT, GERAL = "Projeto Arquitetônico", "Projeto Executivo", "Projeto de Interiores", "Geral"
+ARQ, EXE, INT, GERAL, TRES_D = "Projeto Arquitetônico", "Projeto Executivo", "Projeto de Interiores", "Geral", "3D"
+SECOES = [GERAL, ARQ, EXE, INT, TRES_D]  # ordem no e-mail
 ETAPAS = {
     "I - Projeto Arquitetônico": ARQ,
     "II - Projeto Executivo": EXE,
@@ -82,17 +83,37 @@ REVISAO = "Revisão e Ajustes"
 CORRECAO = "Correção"
 REUNIAO_ENTREGA = "Reunião de Entrega"
 
+# 3D: todo 3D/render de qualquer etapa, organizado por tipo de ambiente.
+# (nome da linha, padrão na Descrição, sem acento; o primeiro que casar vence)
+TIPOS_3D = [
+    ("Fachada", r"fachada|externo|muro"),
+    ("Cozinha", r"cozinha|gourmet|copa|despensa|churrasqueira"),
+    ("Sala", r"\bsala|estar|jantar|\btv\b|interno"),
+    ("Banheiro / Lavabo", r"banheiro|lavabo"),
+    ("Quarto", r"quarto|\bq\.? casal|bebe|hospede|suite|filh"),
+    ("Área de Serviço", r"servico|\bserv\b|lavanderia"),
+    ("Área Externa / Lazer", r"lazer|varanda|deck|piscina|jardim"),
+    ("Closet", r"closet"),
+    ("Escritório", r"escritorio|home office"),
+    ("Outros ambientes", r"brinquedoteca|circulacao|\bhall\b|capela|oratorio|deposi|painel|secretaria"),
+]
+BASE_3D = "Base / modelagem 3D"
+REVISAO_3D = "Revisão de 3D"
+SEM_AMBIENTE_3D = "3D sem ambiente informado"
+
 ESTRUTURA = {
     GERAL: ["Reunião de Briefing", "Visita para Levantamento de Dados"],
-    ARQ: [PLANTA_AMBIENTADA, REUNIAO_AMBIENTACAO, REVISAO, "3D | Fachada",
-          "Detalhamento do Projeto Arquitetônico", CORRECAO, "Compatibilização com Estrutural", REUNIAO_ENTREGA],
+    ARQ: [PLANTA_AMBIENTADA, REUNIAO_AMBIENTACAO, REVISAO, "Detalhamento do Projeto Arquitetônico", CORRECAO,
+          "Compatibilização com Estrutural", REUNIAO_ENTREGA],
     EXE: [PLANTA_AMBIENTADA, REUNIAO_AMBIENTACAO, REVISAO, "Planta de Reforma", "Planta de Pontos",
           "Planta de Iluminação", "Planta de Gesso", "Paginação de Piso", "Detalhamento de Portas",
           "Detalhamento de Vidros", "Detalhamento de Cortinas", "Muro e Calçada", "Planta de Pintura",
           "Memorial de Iluminação e Pintura", CORRECAO, REUNIAO_ENTREGA],
+    TRES_D: ["Fachada", "Cozinha", "Sala", "Quarto", "Banheiro / Lavabo", "Área de Serviço", "Área Externa / Lazer",
+             "Closet", "Escritório", "Outros ambientes", BASE_3D, REVISAO_3D],
 }
-# Em Interiores, cada ambiente tem estes itens.
-ATIVIDADES_AMBIENTE = ["Criação", "Detalhamento de obra", "Detalhamento de marcenaria", "Correção"]
+# Em Interiores, cada ambiente tem estes itens (a criação/3D fica na seção 3D).
+ATIVIDADES_AMBIENTE = ["Detalhamento de obra", "Detalhamento de marcenaria", "Correção"]
 SEM_AMBIENTE = "Ambiente não informado"
 SEM_TIPO_AMBIENTE = "Detalhamento sem tipo (obra ou marcenaria)"
 
@@ -131,7 +152,8 @@ AMBIENTES = [
 FORA_ESTRUTURA = {
     "reuniao": "Outras reuniões (tipo não informado)",
     "executivo": "Projeto Executivo (descrição genérica)",
-    "3d": "3D",
+    "3d": SEM_AMBIENTE_3D,
+    "apresentacao": "Apresentação / ambientação",
     "compatibilizacao": "Compatibilização",
     "outros_detalhes": "Outros detalhamentos (fachada, serralheria, escada, obra)",
     "memoriais": "Memoriais",
@@ -181,11 +203,13 @@ def classificar(etapa, atividade, descricao):
     if not t:
         return None
 
-    # Geral: vale para qualquer etapa.
+    # Geral e 3D: valem para qualquer etapa.
     if tem(r"briefing", t):
         return GERAL, None, "Reunião de Briefing"
     if tem(r"levantamento|\bld\b|conferir medida|medicao", t):
         return GERAL, None, "Visita para Levantamento de Dados"
+    if tem(r"\b3d\b|render|modelagem", t):
+        return classificar_3d(t, secao)
 
     if secao == INT:
         return classificar_interiores(t)
@@ -213,8 +237,6 @@ def classificar(etapa, atividade, descricao):
     if secao == ARQ:
         if tem(r"estrutur", t):
             return ARQ, None, "Compatibilização com Estrutural"
-        if tem(r"\b3d\b|render", t):
-            return ARQ, None, "3D | Fachada"
         if tem(r"arquitetonic|fachada|reforma|ampliac|uso misto|legal|aprovac|^pe\b|executivo", t):
             return ARQ, None, "Detalhamento do Projeto Arquitetônico"
         return None
@@ -244,11 +266,23 @@ def classificar(etapa, atividade, descricao):
         return EXE, None, "Detalhamento de Cortinas"
     if tem(r"executivo|^pe\b", t):
         return EXE, None, FORA_ESTRUTURA["executivo"]
-    if tem(r"\b3d\b|render", t):
-        return EXE, None, FORA_ESTRUTURA["3d"]
     if tem(r"fachada|serralheria|escada|pergolado|obra|marcenaria", t):
         return EXE, None, FORA_ESTRUTURA["outros_detalhes"]
     return None
+
+
+def classificar_3d(t, secao):
+    """3D de qualquer etapa: revisão e base/modelagem ficam separadas da criação por ambiente."""
+    if tem(r"correc|revisao|ajuste|alterac", t):
+        return TRES_D, None, REVISAO_3D
+    if tem(r"\bbases? 3d|modelagem", t):
+        return TRES_D, None, BASE_3D
+    for nome, padrao in TIPOS_3D:
+        if tem(padrao, t):
+            return TRES_D, None, nome
+    if secao == ARQ:
+        return TRES_D, None, "Fachada"  # no Arquitetônico, o 3D é o da fachada
+    return TRES_D, None, SEM_AMBIENTE_3D
 
 
 def classificar_interiores(t):
@@ -259,8 +293,8 @@ def classificar_interiores(t):
         item = "Detalhamento de marcenaria"
     elif tem(r"det(\.|alhamento)? de obra|\(obra\)|\bobra\b", t) and not tem(r"visita|relatorio", t):
         item = "Detalhamento de obra"
-    elif tem(r"\b3d\b|render|criac|ambienta|apresentac|modelagem", t):
-        item = "Criação"
+    elif tem(r"criac|ambienta|apresentac", t):
+        return INT, None, FORA_ESTRUTURA["apresentacao"]
     elif tem(r"entrega|termo", t):
         return INT, None, FORA_ESTRUTURA["entrega"]
     elif tem(r"reuniao", t):
@@ -573,61 +607,101 @@ def linhas_secao(secao, stats_secao):
 
 # ---------------------------------------------------------------- e-mail
 
-ESTILO = """
-body{font-family:Arial,Helvetica,sans-serif;color:#2b2b2b;font-size:14px;margin:0;padding:20px;background:#faf8f5}
-.box{max-width:680px;margin:0 auto;background:#fff;border:1px solid #ece7df;border-radius:12px;padding:24px 26px}
-h1{font-size:19px;margin:0 0 4px} p.sub{color:#888;margin:0 0 6px;font-size:12px;line-height:1.5}
-h2{font-size:15px;margin:26px 0 6px;padding-bottom:6px;border-bottom:2px solid #c9a97c}
-table{border-collapse:collapse;width:100%}
-th,td{padding:6px 8px;border-bottom:1px solid #f0ece6;text-align:right;white-space:nowrap}
-th{font-size:11px;color:#888;font-weight:bold;text-transform:uppercase;letter-spacing:.3px}
-th:first-child,td:first-child{text-align:left;white-space:normal}
-td.h{font-weight:bold;font-size:14px}
-td.h small{display:block;font-weight:normal;font-size:10px;color:#aaa}
-td.amb{font-weight:bold;font-size:13px;padding-top:12px;color:#7a5c33;border-bottom:1px solid #e6dccb}
-td.sub{padding-left:18px}
-tr.fora td{color:#999;font-style:italic} tr.fora td.h{color:#999}
-tr.divisa td{border-top:1px dashed #ddd;padding-top:4px;font-size:10px;color:#aaa;text-transform:uppercase}
-.muted{color:#ccc}
-.pend{font-size:12px;color:#555;line-height:1.6;margin:4px 0 0;padding-left:18px}
-.pend a{color:#2b5797}
-.nota{color:#999;font-size:11px;line-height:1.5;margin-top:24px;border-top:1px solid #eee;padding-top:10px}
-"""
+# Paleta e tipografia. Tudo vai em estilo inline, que é o que os clientes de e-mail
+# (Gmail, Outlook, celular) respeitam de forma confiável.
+COR = {
+    "fundo": "#f3efe8", "cartao": "#ffffff", "texto": "#2b2723", "suave": "#8a8178", "linha": "#eee8df",
+    "escuro": "#2f2a25", "ouro": "#b8925a", "faixa": "#faf6f0", "trilho": "#efe9e0",
+}
+COR_PESSOA = {"Lícia": "#b5653f", "Willian": "#557a5b"}
+FONTE = "font-family:'Helvetica Neue',Helvetica,Arial,sans-serif"
+DESCRICAO_SECAO = {
+    GERAL: "Etapas comuns a todos os projetos",
+    ARQ: "Itens da etapa de Projeto Arquitetônico",
+    EXE: "Itens da etapa de Projeto Executivo",
+    INT: "Detalhamento por ambiente",
+    TRES_D: "Todo 3D e render, de qualquer etapa, por tipo de ambiente",
+}
 
 
-def celula_media(st, entregas):
+def celula_media(st, entregas, pessoa, maior):
     if not st:
-        return '<td class="muted">—</td>'
-    base = f"<small>em {st['n']}</small>" if st["n"] != entregas else ""
-    return f'<td class="h">{horas(st["media"])}{base}</td>'
+        return (f"<td style='padding:9px 10px;text-align:right;color:#cfc7bc;font-size:13px;"
+                f"border-bottom:1px solid {COR['linha']}'>—</td>")
+    largura = max(4, int(100 * st["media"] / maior)) if maior else 4
+    base = (f"<div style='font-size:10px;color:{COR['suave']};margin-top:2px'>em {st['n']}</div>"
+            if st["n"] != entregas else "")
+    return (f"<td style='padding:9px 10px;text-align:right;border-bottom:1px solid {COR['linha']};width:110px'>"
+            f"<div style='font-size:15px;font-weight:bold;color:{COR_PESSOA[pessoa]}'>{horas(st['media'])}</div>"
+            f"<div style='background:{COR['trilho']};height:4px;border-radius:2px;margin-top:4px'>"
+            f"<div style='background:{COR_PESSOA[pessoa]};width:{largura}%;height:4px;border-radius:2px'></div></div>"
+            f"{base}</td>")
 
 
-def linha_html(rotulo, dados, pessoas, classes="", recuo=False):
+def linha_html(rotulo, dados, pessoas, maior, fora=False, recuo=False):
     n = dados["entregas"] if dados else 0
-    celulas = "".join(celula_media(dados.get(p) if dados else None, n) for p in pessoas)
-    td = "<td class='sub'>" if recuo else "<td>"
-    return f"<tr class='{classes}'>{td}{rotulo}</td><td>{n or '<span class=muted>—</span>'}</td>{celulas}</tr>"
+    cor_rotulo = COR["suave"] if (fora or not n) else COR["texto"]
+    estilo_rotulo = "font-style:italic;" if fora else ""
+    entregas = (f"<span style='display:inline-block;min-width:22px;padding:2px 7px;border-radius:10px;"
+                f"background:{COR['faixa']};color:{COR['texto']};font-size:12px;text-align:center'>{n}</span>"
+                if n else f"<span style='color:#cfc7bc'>—</span>")
+    celulas = "".join(celula_media((dados or {}).get(p), n, p, maior) for p in pessoas)
+    return (f"<tr><td style='padding:9px 10px 9px {26 if recuo else 10}px;font-size:13px;color:{cor_rotulo};"
+            f"{estilo_rotulo}border-bottom:1px solid {COR['linha']}'>{rotulo}</td>"
+            f"<td style='padding:9px 6px;text-align:center;border-bottom:1px solid {COR['linha']};width:64px'>"
+            f"{entregas}</td>{celulas}</tr>")
 
 
-def tabela_secao(secao, stats_secao, pessoas):
+def faixa_html(texto, pessoas, discreta=False):
+    estilo = (f"color:{COR['suave']};font-weight:normal;font-style:italic" if discreta
+              else f"color:{COR['ouro']};font-weight:bold")
+    return (f"<tr><td colspan='{2 + len(pessoas)}' style='padding:14px 10px 6px;font-size:11px;letter-spacing:.8px;"
+            f"text-transform:uppercase;{estilo};background:{COR['faixa']};border-bottom:1px solid {COR['linha']}'>"
+            f"{texto}</td></tr>")
+
+
+def tabela_secao(numero, secao, stats_secao, pessoas):
     linhas = linhas_secao(secao, stats_secao)
+    medias = [st["media"] for _, _, dados, _ in linhas if dados for p in pessoas if (st := dados.get(p))]
+    maior = max(medias, default=0)
+    total_entregas = sum(dados["entregas"] for _, _, dados, _ in linhas if dados)
+
+    html = [f"<table width='100%' cellpadding='0' cellspacing='0' style='margin-top:30px'><tr>"
+            f"<td style='width:44px;vertical-align:top'><div style='width:34px;height:34px;border-radius:17px;"
+            f"background:{COR['escuro']};color:#fff;font-size:13px;font-weight:bold;text-align:center;"
+            f"line-height:34px'>{numero:02d}</div></td>"
+            f"<td style='vertical-align:top'><div style='font-size:18px;font-weight:bold;color:{COR['texto']}'>"
+            f"{secao}</div><div style='font-size:12px;color:{COR['suave']};margin-top:2px'>"
+            f"{DESCRICAO_SECAO[secao]}</div></td>"
+            f"<td style='vertical-align:top;text-align:right;font-size:12px;color:{COR['suave']};white-space:nowrap'>"
+            f"{total_entregas} entrega{'s' * (total_entregas != 1)}</td></tr></table>"]
+
     if not linhas:
-        return [f"<h2>{secao}</h2>", "<p class='sub'>Ainda não há entregas concluídas.</p>"]
-    html = [f"<h2>{secao}</h2>", "<table><tr><th>Atividade</th><th>Entregas</th>"
-            + "".join(f"<th>Média {p}</th>" for p in pessoas) + "</tr>"]
+        html.append(f"<p style='font-size:13px;color:{COR['suave']};margin:10px 0 0 44px'>"
+                    "Ainda não há entregas concluídas.</p>")
+        return html
+
+    cab = "".join(f"<td style='padding:8px 10px;text-align:right;font-size:11px;text-transform:uppercase;"
+                  f"letter-spacing:.6px;color:{COR_PESSOA[p]};font-weight:bold'>{p}</td>" for p in pessoas)
+    html.append(f"<table width='100%' cellpadding='0' cellspacing='0' style='margin-top:12px;border-top:2px solid "
+                f"{COR['escuro']}'><tr><td style='padding:8px 10px;font-size:11px;text-transform:uppercase;"
+                f"letter-spacing:.6px;color:{COR['suave']}'>Atividade</td><td style='padding:8px 6px;"
+                f"text-align:center;font-size:11px;text-transform:uppercase;letter-spacing:.6px;"
+                f"color:{COR['suave']}'>Entregas</td>{cab}</tr>")
+
     ambiente_atual, divisa = object(), False
     for ambiente, item, dados, fora in linhas:
         if secao == INT and ambiente is not None:
             if ambiente != ambiente_atual:
-                rotulo_amb = ambiente + (" (média por projeto)" if ambiente == SEM_AMBIENTE else "")
-                html.append(f"<tr><td class='amb' colspan='{2 + len(pessoas)}'>{rotulo_amb}</td></tr>")
+                rotulo = ambiente + (" · média por projeto" if ambiente == SEM_AMBIENTE else "")
+                html.append(faixa_html(rotulo, pessoas, discreta=ambiente == SEM_AMBIENTE))
                 ambiente_atual = ambiente
-            html.append(linha_html(item, dados, pessoas, "fora" if fora else "", recuo=True))
+            html.append(linha_html(item, dados, pessoas, maior, fora=fora, recuo=True))
             continue
         if fora and not divisa:
-            html.append(f"<tr class='divisa'><td colspan='{2 + len(pessoas)}'>Fora da estrutura</td></tr>")
+            html.append(faixa_html("Fora da estrutura · descrições genéricas", pessoas, discreta=True))
             divisa = True
-        html.append(linha_html(item, dados, pessoas, "fora" if fora else ""))
+        html.append(linha_html(item, dados, pessoas, maior, fora=fora))
     html.append("</table>")
     return html
 
@@ -642,44 +716,71 @@ def lista_pendencias(alertas, sessoes):
     if not relevantes and not sem_tipo:
         return []
 
-    html = ["<h2>Para corrigir no Notion</h2>"]
+    def caixa(titulo, explicacao, itens, cor_fundo, cor_borda):
+        lis = "".join(f"<li style='margin:3px 0'>{i}</li>" for i in itens)
+        return (f"<div style='margin-top:14px;padding:14px 16px;background:{cor_fundo};border-left:3px solid "
+                f"{cor_borda};border-radius:6px'><div style='font-size:13px;font-weight:bold;color:{COR['texto']}'>"
+                f"{titulo}</div><div style='font-size:12px;color:{COR['suave']};margin:2px 0 6px'>{explicacao}</div>"
+                f"<ul style='margin:0;padding-left:18px;font-size:12px;color:{COR['texto']};line-height:1.5'>"
+                f"{lis}</ul></div>")
+
+    link = f"color:#2b5797;text-decoration:none"
+    html = [f"<div style='margin-top:36px;font-size:18px;font-weight:bold;color:{COR['texto']}'>Para corrigir no "
+            "Notion</div>"]
     if relevantes:
-        html.append(f"<p class='sub'><b>Registros inconsistentes ({len(relevantes)})</b> — "
-                    "os que estão fora do cálculo entram assim que forem corrigidos.</p><ul class='pend'>")
+        itens = []
         for pessoa, desc, inicio, motivo, url, efeito, _ in relevantes:
             data = parse_iso(inicio).astimezone(FUSO).strftime("%d/%m/%y") if inicio else "sem data"
-            html.append(f"<li><a href='{url}'>{data} · {pessoa} · {desc}</a> — {motivo}</li>")
-        html.append("</ul>")
+            itens.append(f"<a href='{url}' style='{link}'>{data} · {pessoa} · {desc}</a> "
+                         f"<span style='color:{COR['suave']}'>— {motivo}</span>")
+        html.append(caixa(f"Registros inconsistentes ({len(relevantes)})",
+                          "Os que estão fora do cálculo entram assim que forem corrigidos.",
+                          itens, "#fdf6ec", "#d9a441"))
     if sem_tipo:
-        html.append(f"<p class='sub' style='margin-top:12px'><b>Descrições sem classificação ({len(sem_tipo)})</b> — "
-                    "ficam fora das médias. Ajuste a descrição no Notion ou peça para incluir uma regra.</p>"
-                    "<ul class='pend'>")
+        itens = []
         for (secao, desc), lista in sorted(sem_tipo.items(), key=lambda kv: (kv[0][0], sem_acento(kv[0][1]))):
             recente = max(lista, key=lambda s: s["ini"])
-            qtd = f" ({len(lista)} registros)" if len(lista) > 1 else ""
-            html.append(f"<li><a href='{recente['url']}'>{desc}</a> · {secao}{qtd}</li>")
-        html.append("</ul>")
+            qtd = f" · {len(lista)} registros" if len(lista) > 1 else ""
+            itens.append(f"<a href='{recente['url']}' style='{link}'>{desc}</a> "
+                         f"<span style='color:{COR['suave']}'>· {secao}{qtd}</span>")
+        html.append(caixa(f"Descrições sem classificação ({len(sem_tipo)})",
+                          "Não correspondem a nenhum item da estrutura e ficam fora das médias. Ajuste a "
+                          "descrição ou a etapa no Notion, ou peça uma regra nova.",
+                          itens, "#f5f3f0", "#b9b0a5"))
     return html
 
 
 def montar_html(ate_ano, ate_mes, stats, sessoes, alertas):
     pessoas = list(PROFISSIONAIS.values())
     titulo = f"Referência de horas por atividade — até {MESES[ate_mes - 1]} de {ate_ano}"
-    html = [f"<html><head><meta charset='utf-8'><style>{ESTILO}</style></head><body><div class='box'>",
-            f"<h1>{titulo}</h1>",
-            "<p class='sub'>Média geral acumulada de horas por entrega, com todas as entregas concluídas do "
-            "Controle de Horas LSC. Cada média considera só as entregas em que aquela pessoa trabalhou "
-            "(“em N” quando foram menos que o total); “—” = sem entregas.</p>"]
-    for secao in (GERAL, ARQ, EXE, INT):
-        html += tabela_secao(secao, stats.get(secao, {}), pessoas)
+    legenda = " ".join(f"<span style='display:inline-block;margin-left:14px'><span style='display:inline-block;"
+                       f"width:9px;height:9px;border-radius:5px;background:{COR_PESSOA[p]};margin-right:5px'></span>"
+                       f"{p}</span>" for p in pessoas)
+    html = [f"<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width'></head>"
+            f"<body style='margin:0;padding:24px 12px;background:{COR['fundo']};{FONTE}'>"
+            f"<div style='max-width:700px;margin:0 auto'>"
+            # Cabeçalho
+            f"<div style='background:{COR['escuro']};border-radius:14px 14px 0 0;padding:26px 28px'>"
+            f"<div style='font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:{COR['ouro']}'>"
+            "LSC Arquitetura · Referência para orçamentos</div>"
+            "<div style='font-size:24px;font-weight:bold;color:#fff;margin-top:8px'>Média de horas por entrega</div>"
+            f"<div style='font-size:13px;color:#cfc6ba;margin-top:4px'>Acumulado de todas as entregas concluídas "
+            f"até {MESES[ate_mes - 1]} de {ate_ano}</div></div>"
+            # Corpo
+            f"<div style='background:{COR['cartao']};border-radius:0 0 14px 14px;padding:8px 28px 28px'>"
+            f"<div style='font-size:12px;color:{COR['suave']};padding:14px 0 4px;border-bottom:1px solid "
+            f"{COR['linha']}'>Cada média considera só as entregas daquela pessoa (“em N” quando foram menos que "
+            f"o total) — {legenda}</div>"]
+    for numero, secao in enumerate(SECOES, start=1):
+        html += tabela_secao(numero, secao, stats.get(secao, {}), pessoas)
     html += lista_pendencias(alertas, sessoes)
-    html.append("<p class='nota'>Entrega = todas as horas de um item dentro de um projeto. Entra no cálculo quando "
-                f"o projeto é finalizado ou a etapa fica {DIAS_SEM_LANCAMENTO} dias sem lançamentos; projetos "
-                "cancelados não entram. Profissional pelo Ref. Equipe, etapa pelo campo Etapa, item deduzido pela "
-                "Descrição. Linhas em cinza não fazem parte da estrutura (descrição genérica) e ficam separadas "
-                "para não distorcer as médias. Mediana, mínimo, máximo, horas totais e custo médio estão na "
-                "planilha anexa.</p></div></body></html>")
-    return titulo, "\n".join(html)
+    html.append(f"<div style='margin-top:30px;padding-top:12px;border-top:1px solid {COR['linha']};font-size:11px;"
+                f"color:{COR['suave']};line-height:1.6'>Entrega = todas as horas de um item dentro de um projeto. "
+                f"Entra no cálculo quando o projeto é finalizado ou a etapa fica {DIAS_SEM_LANCAMENTO} dias sem "
+                "lançamentos; projetos cancelados não entram. Profissional pelo Ref. Equipe, etapa pelo campo Etapa, "
+                "item deduzido pela Descrição. Mediana, mínimo, máximo, horas totais e custo médio estão na planilha "
+                "anexa.</div></div></div></body></html>")
+    return titulo, "".join(html)
 
 
 def montar_csv(stats):
@@ -688,7 +789,7 @@ def montar_csv(stats):
     w = csv.writer(saida, delimiter=";")
     w.writerow(["Etapa", "Ambiente", "Atividade", "Profissional", "Entregas", "Média (h)", "Mediana (h)",
                 "Mínimo (h)", "Máximo (h)", "Horas totais", "Custo médio por entrega (R$)"])
-    for secao in (GERAL, ARQ, EXE, INT):
+    for secao in SECOES:
         for ambiente, item, dados, _ in linhas_secao(secao, stats.get(secao, {})):
             for p in PROFISSIONAIS.values():
                 st = (dados or {}).get(p)
