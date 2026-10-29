@@ -717,13 +717,11 @@ def bloco_interiores(numero, stats_secao, pessoas):
     Willian, que faz todo o detalhamento). Depois, a tabela "Toda a etapa".
     """
     resp = RESPONSAVEL_DETALHAMENTO_INTERIORES
-    matriz, sem_tipo, toda = {}, [], []
+    matriz, toda = {}, []
     for ambiente, item, dados, fora in linhas_secao(INT, stats_secao):
         if ambiente == TODA_ETAPA or ambiente is None:
             toda.append((item, [(dados or {}).get(p) for p in pessoas], fora))
-        elif item == SEM_TIPO_AMBIENTE:
-            sem_tipo += [f"{ambiente} {horas(st['media'])} ({p})" for p in pessoas if (st := dados.get(p))]
-        else:
+        elif item != SEM_TIPO_AMBIENTE:  # detalhamento sem tipo (obra ou marcenaria) não aparece
             matriz.setdefault(ambiente, {})[item] = (dados or {}).get(resp)
 
     html = [titulo_secao(numero, INT)]
@@ -734,10 +732,6 @@ def bloco_interiores(numero, stats_secao, pessoas):
                    [m.get("Detalhamento de obra"), m.get("Detalhamento de marcenaria")], amb == SEM_AMBIENTE)
                   for amb, m in matriz.items()]
         html.append(tabela(["Ambiente", "Obra", "Marcenaria"], linhas))
-        nota = f"Médias do {resp}, que faz todo o detalhamento."
-        if sem_tipo:
-            nota += " Sem tipo de detalhamento: " + ", ".join(sem_tipo) + "."
-        html.append(f'<p style="margin:4px 0 0;font-size:9.5px;color:#aaa;line-height:1.4;">{nota}</p>')
     if toda:
         html.append('<div style="margin-top:12px;">'
                     + tabela(cabecalho_pessoas("Toda a etapa", pessoas), toda) + '</div>')
