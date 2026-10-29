@@ -155,7 +155,7 @@ AGRUPAR_AMBIENTE = {
     **{nome: "Quarto" for nome in
        ("Quarto Casal", "Quarto Bebê", "Quarto Filho(a)", "Quarto Hóspedes", "Suíte", "Quarto")},
     **{nome: "Banheiro" for nome in ("Lavabo", "Banheiro Suíte", "Banheiro Social", "Banheiros")},
-    **{nome: "Cozinha" for nome in ("Cozinha", "Copa")},
+    **{nome: "Cozinha" for nome in ("Cozinha", "Copa", "Cozinha Gourmet")},
 }
 
 # Linhas que aparecem quando há horas que não cabem em nenhum item da estrutura
