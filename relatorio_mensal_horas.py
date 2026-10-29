@@ -753,7 +753,6 @@ def lista_pendencias(numero, alertas, sessoes):
 def montar_html(ate_ano, ate_mes, stats, sessoes, alertas):
     pessoas = list(PROFISSIONAIS.values())
     titulo = f"Referência de horas por atividade — até {MESES[ate_mes - 1]} de {ate_ano}"
-    total = sum(d["entregas"] for s in stats.values() for d in s.values())
 
     corpo = [f'<p style="margin:0 0 24px;font-size:12px;color:#888;line-height:1.6;">Média geral acumulada de horas '
              f'por entrega. Cada média considera só as entregas daquela pessoa — “em N” aparece quando foram '
@@ -777,12 +776,10 @@ def montar_html(ate_ano, ate_mes, stats, sessoes, alertas):
             'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;color:#1a1a1a;">'
             '<div style="max-width:720px;margin:32px auto;">'
             '<div style="background:#1a1a1a;padding:24px 28px;border-radius:10px 10px 0 0;">'
-            '<p style="margin:0;color:#666;font-size:11px;text-transform:uppercase;letter-spacing:1.5px;">'
+            '<p style="margin:0;color:#fff;font-size:20px;font-weight:600;">'
             'Referência de Horas para Orçamento · Simplific</p>'
-            f'<p style="margin:6px 0 0;color:#fff;font-size:20px;font-weight:600;">'
-            f'Acumulado até {MESES[ate_mes - 1]} de {ate_ano}</p>'
-            f'<p style="margin:4px 0 0;color:#888;font-size:12px;">{total} entregas concluídas · '
-            f'Gerado automaticamente</p></div>'
+            f'<p style="margin:6px 0 0;color:#888;font-size:13px;">'
+            f'Acumulado até {MESES[ate_mes - 1]} de {ate_ano}</p></div>'
             f'<div style="background:#fff;padding:28px;border-radius:0 0 10px 10px;">{"".join(corpo)}</div>'
             '</div></body></html>')
     return titulo, html
