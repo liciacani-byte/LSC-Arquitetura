@@ -89,7 +89,7 @@ TIPOS_3D = [
     ("Fachada", r"fachada|externo|muro"),
     ("Cozinha", r"cozinha|gourmet|copa|despensa|churrasqueira"),
     ("Sala", r"\bsala|estar|jantar|\btv\b|interno"),
-    ("Banheiro / Lavabo", r"banheiro|lavabo"),
+    ("Banheiro", r"banheiro|lavabo"),
     ("Quarto", r"quarto|\bq\.? casal|bebe|hospede|suite|filh"),
     ("Área de Serviço", r"servico|\bserv\b|lavanderia"),
     ("Área Externa / Lazer", r"lazer|varanda|deck|piscina|jardim"),
@@ -135,6 +135,7 @@ AMBIENTES = [
     ("Quarto Filho(a)", r"quarto filh"),
     ("Quarto Hóspedes", r"hospede"),
     ("Suíte", r"suite"),
+    ("Quarto", r"quarto"),
     ("Closet", r"closet"),
     ("Sala de Jantar", r"jantar"),
     ("Sala de TV / Estar", r"sala de tv|\bestar\b"),
@@ -147,6 +148,15 @@ AMBIENTES = [
     ("Capela / Oratório", r"capela|oratorio"),
     ("Fachada", r"fachada"),
 ]
+
+# Ambientes que aparecem juntos numa linha só. Cada um continua sendo uma entrega
+# separada, então a média é entre os quartos (e não a soma de todos os quartos do projeto).
+AGRUPAR_AMBIENTE = {
+    **{nome: "Quarto" for nome in
+       ("Quarto Casal", "Quarto Bebê", "Quarto Filho(a)", "Quarto Hóspedes", "Suíte", "Quarto")},
+    **{nome: "Banheiro" for nome in ("Lavabo", "Banheiro Suíte", "Banheiro Social", "Banheiros")},
+    **{nome: "Cozinha" for nome in ("Cozinha", "Copa")},
+}
 
 # Linhas que aparecem quando há horas que não cabem em nenhum item da estrutura
 # (ficam separadas para não distorcer as médias dos itens).
@@ -275,7 +285,9 @@ def classificar_3d(t, secao):
         return TRES_D, None, BASE_3D
     for nome, padrao in TIPOS_3D:
         if tem(padrao, t):
-            return TRES_D, None, nome
+            # Em Quarto, Banheiro e Cozinha, guarda qual é (casal, lavabo, copa...) para cada um ser uma entrega.
+            variante = (ambiente_de(t) or nome) if nome in ("Quarto", "Banheiro", "Cozinha") else None
+            return TRES_D, variante, nome
     if secao == ARQ:
         return TRES_D, None, "Fachada"  # no Arquitetônico, o 3D é o da fachada
     return TRES_D, None, SEM_AMBIENTE_3D
@@ -550,9 +562,12 @@ def calcular(entregas):
     custos = defaultdict(list)
     projetos = defaultdict(set)
     for (projeto, secao, ambiente, item, pessoa), e in entregas.items():
-        minutos[(secao, ambiente, item, pessoa)].append(e["min"])
-        custos[(secao, ambiente, item, pessoa)].append(e["custo"])
-        projetos[(secao, ambiente, item)].add(projeto)
+        # Na linha do relatório, os quartos viram "Quarto" e os banheiros "Banheiro"
+        # (no 3D o ambiente só serve para separar as entregas). Cada um segue sendo uma entrega.
+        linha = None if secao == TRES_D else AGRUPAR_AMBIENTE.get(ambiente, ambiente)
+        minutos[(secao, linha, item, pessoa)].append(e["min"])
+        custos[(secao, linha, item, pessoa)].append(e["custo"])
+        projetos[(secao, linha, item)].add((projeto, ambiente))
 
     stats = defaultdict(lambda: defaultdict(dict))
     for (secao, ambiente, item), conjunto in projetos.items():
