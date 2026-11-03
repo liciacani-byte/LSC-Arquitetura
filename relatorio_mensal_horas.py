@@ -79,6 +79,9 @@ REUNIAO = "Reunião"
 REVISAO = "Revisão e Ajustes"
 CORRECAO = "Correção"
 LEVANTAMENTO = "Levantamento de Dados"
+VISITA = "Visita Técnica"
+# Itens da seção Geral em que cada lançamento é uma entrega (média por reunião / por visita).
+POR_SESSAO = {REUNIAO, VISITA}
 
 # 3D: todo 3D/render de qualquer etapa, organizado por tipo de ambiente.
 # (nome da linha, padrão na Descrição, sem acento; o primeiro que casar vence)
@@ -99,8 +102,8 @@ REVISAO_3D = "Revisão de 3D"
 SEM_AMBIENTE_3D = "3D sem ambiente informado"
 
 ESTRUTURA = {
-    # Reunião = todas as reuniões, de qualquer etapa; a média é por reunião.
-    GERAL: [REUNIAO, LEVANTAMENTO],
+    # Reunião e Visita Técnica valem para qualquer etapa; a média é por reunião / por visita.
+    GERAL: [REUNIAO, LEVANTAMENTO, VISITA],
     ARQ: [PLANTA_AMBIENTADA, REVISAO, "Detalhamento", CORRECAO, "Compatibilização com Estrutural"],
     EXE: [PLANTA_AMBIENTADA, "Planta de Reforma", "Planta de Pontos",
           "Planta de Iluminação", "Planta de Gesso", "Paginação de Piso", "Detalhamento de Portas",
@@ -245,6 +248,8 @@ def classificar_texto(secao, t):
         return GERAL, None, REUNIAO
     if tem(r"levantamento|\bld\b|conferir medida|medicao", t):
         return GERAL, None, LEVANTAMENTO
+    if tem(r"visita|vistoria", t):
+        return GERAL, None, VISITA
     if tem(r"\b3d\b|render|modelagem", t):
         return classificar_3d(t, secao)
 
@@ -558,8 +563,8 @@ def entregas_concluidas(sessoes, corte):
         if not s["projeto"] or not s["classe"]:
             continue
         secao, ambiente, item = s["classe"]
-        if secao == GERAL and item == REUNIAO:
-            ambiente = s["url"]  # cada reunião é uma entrega: a média é por reunião
+        if secao == GERAL and item in POR_SESSAO:
+            ambiente = s["url"]  # cada reunião / visita é uma entrega: a média é por reunião / por visita
         pessoa = s["pessoa"]
         if secao == INT and item in ATIVIDADES_AMBIENTE:
             pessoa = RESPONSAVEL_DETALHAMENTO_INTERIORES  # quem faz esse detalhamento, seja qual for o Ref. Equipe
@@ -577,7 +582,7 @@ def entregas_concluidas(sessoes, corte):
     concluidas = {}
     for (projeto, secao, ambiente, item, pessoa), g in grupos.items():
         info = secao_info[(projeto, secao)]
-        reuniao = secao == GERAL and item == REUNIAO  # reunião já está concluída quando acontece
+        reuniao = secao == GERAL and item in POR_SESSAO  # reunião / visita já está concluída quando acontece
         if info["status"] in STATUS_PROJETO_CANCELADO and not reuniao:
             continue
         if reuniao or info["status"] in STATUS_PROJETO_CONCLUIDO or info["ultimo"] <= limite:
